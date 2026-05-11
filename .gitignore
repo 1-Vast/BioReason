@@ -1,0 +1,50 @@
+# BioReason - gitignore
+# NEVER commit: .env, dataset contents, output contents, checkpoints, archives
+
+.env
+.venv
+env/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Dataset (keep only README and .gitkeep)
+dataset/*
+!dataset/README.md
+!dataset/.gitkeep
+
+# Output (keep only README and .gitkeep)
+output/*
+!output/README.md
+!output/.gitkeep
+
+# Archives
+archive_old/
+old/
+logs/
+wandb/
+runs/
+
+# Large binaries
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.h5ad
+*.h5
+*.loom
+*.mtx
+*.csv
+*.tsv
+*.pkl
+*.pickle
+
+# OS
+.DS_Store
+Thumbs.db

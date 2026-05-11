@@ -1,0 +1,23 @@
+# BioReason: Evidence-guided latent biological reasoning for single-cell perturbation prediction.
+
+# Core idea:
+# control expression + perturbation -> latent biological reasoning -> perturbed expression prediction
+
+project:
+  name: "BioReason"
+  task: "single-cell perturbation prediction"
+  idea: "evidence-guided latent biological reasoning"
+
+data:
+  h5ad: ""
+  label_key: "perturbation"
+  control_label: "control"
+  cell_type_key: "cell_type"
+  dose_key: "dose"
+  time_key: "time"
+  batch_key: "batch"
+  use_hvg: true
+  n_hvg: 2000
+
+eval:
+  top_deg: 50

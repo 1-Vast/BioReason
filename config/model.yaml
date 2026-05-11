@@ -1,0 +1,13 @@
+# BioReason model hyperparameters
+
+model:
+  name: "BioReason"
+  input_dim: 2000
+  dim: 256
+  hidden: 512
+  latent_steps: 8
+  heads: 4
+  dropout: 0.1
+  residual: true
+  pert_mode: "id"       # "id", "multihot", "continuous"
+  pert_agg: "mean"      # "mean", "sum", "attention"

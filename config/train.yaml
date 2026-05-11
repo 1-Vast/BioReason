@@ -1,0 +1,13 @@
+# BioReason training hyperparameters
+
+train:
+  stage: 1
+  epochs: 100
+  batch_size: 128
+  lr: 0.0005
+  weight_decay: 0.0001
+  amp: true
+  grad_clip: 1.0
+  device: "cuda"
+  seed: 42
+  save_dir: "output"

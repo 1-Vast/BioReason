@@ -1,0 +1,10 @@
+torch>=1.13
+numpy
+pandas
+scipy
+scikit-learn
+anndata
+scanpy
+pyyaml
+python-dotenv
+tqdm

@@ -1,0 +1,9 @@
+# BioReason loss weights
+
+loss:
+  expr: 1.0
+  delta: 1.0
+  deg: 2.0
+  latent: 1.0
+  evidence: 1.0
+  mmd: 0.1
