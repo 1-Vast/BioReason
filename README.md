@@ -298,6 +298,31 @@ BioReason checkpoints are self-contained for reproducible inference:
 
 ---
 
+## Large-scale Stability Notes
+
+BioReason is designed for real-world single-cell datasets (10⁵–10⁶ cells):
+
+1. **Sparse-first**: `AnnData.X` stays sparse in memory. Dense conversion only row-wise / batch-wise. No full `.toarray()` in dataset init.
+
+2. **Sparse HVG**: Uses sparse variance (`X.power(2).mean() - X.mean()**2`), not full densify.
+
+3. **Sparse gene alignment**: `align_adata_to_genes()` returns sparse CSR via column slicing. Missing genes are sparse zero columns.
+
+4. **MMD float32**: Under AMP, `mmd_loss` casts to `.float()` internally. `torch.nan_to_num` guards overflow. `mmd_max_samples` (128) limits O(B²).
+
+5. **Atomic checkpoint**: Writes to `.tmp` then `os.replace()`. Interrupted writes never corrupt existing checkpoint.
+
+6. **Preallocated inference**: NumPy preallocation or `--memmap` for million-cell output. No `torch.cat()` memory spike.
+
+7. **BatchNorm safety**: `avoid_single_batch=True` auto-drops tail batch if size=1. **LayerNorm recommended** for single-cell.
+
+8. **Memmap inference**:
+   ```bash
+   python main.py infer ... --memmap --memmap_dir output/infer_memmap
+   ```
+
+---
+
 ## File Index
 
 ### `models/` — Core

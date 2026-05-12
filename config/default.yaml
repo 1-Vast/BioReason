@@ -19,6 +19,8 @@ data:
   use_control_as_input: true
   use_hvg: true
   n_hvg: 2000
+  cache_group_means: true
+  sparse_output: true
 
 eval:
   top_deg: 50

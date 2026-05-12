@@ -46,6 +46,8 @@ def build_parser():
     pi.add_argument("--no_progress", dest="progress", action="store_false")
     pi.add_argument("--pin_memory", dest="pin_memory", action="store_true", default=None)
     pi.add_argument("--no_pin_memory", dest="pin_memory", action="store_false")
+    pi.add_argument("--memmap", action="store_true", default=False, help="Use disk memmap for large output")
+    pi.add_argument("--memmap_dir", default="output/infer_memmap", help="Memmap directory")
 
     pe = sub.add_parser("eval", help="Evaluate predictions")
     pe.add_argument("--config", default="config/default.yaml")

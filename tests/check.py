@@ -9,26 +9,23 @@ tests = [
     "test_gene_align", "test_target_latent_mask", "test_cov_dims",
     "test_device_flow", "test_loader_perf_flags",
     "test_progress_smoke", "test_infer_progress",
+    "test_sparse_memory", "test_mmd_amp_stability",
+    "test_atomic_checkpoint", "test_batchnorm_tail_batch",
+    "test_infer_prealloc",
 ]
-passed, failed, skipped = 0, 0, 0
+passed, failed = 0, 0
 
 for name in tests:
-    sys.stdout.write(f"[....] {name}\r")
-    sys.stdout.flush()
+    sys.stdout.write(f"[....] {name}\r"); sys.stdout.flush()
     try:
         mod = __import__(f"tests.{name}", fromlist=[""])
-        passed += 1
-        print(f"[PASS] {name}")
+        passed += 1; print(f"[PASS] {name}")
     except SystemExit as e:
-        if e.code == 0:
-            passed += 1; print(f"[PASS] {name}")
-        else:
-            failed += 1; print(f"[FAIL] {name} (exit {e.code})")
+        if e.code == 0: passed += 1; print(f"[PASS] {name}")
+        else: failed += 1; print(f"[FAIL] {name} (exit {e.code})")
     except Exception as e:
-        failed += 1
-        print(f"[FAIL] {name}: {e}")
+        failed += 1; print(f"[FAIL] {name}: {e}")
 
 print(f"\n{'='*40}")
-print(f"PASS: {passed}  FAIL: {failed}  SKIP: {skipped}")
-if failed:
-    sys.exit(1)
+print(f"PASS: {passed}  FAIL: {failed}")
+if failed: sys.exit(1)

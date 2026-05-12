@@ -27,3 +27,4 @@ train:
   monitor_gpu: true
   empty_cache: false
   compile: false
+  avoid_single_batch: true

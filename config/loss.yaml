@@ -9,3 +9,5 @@ loss:
   mmd: 0.1
   top_deg: 50
   latent_metric: "cosine"
+  mmd_max_samples: 128
+  mmd_every: 1

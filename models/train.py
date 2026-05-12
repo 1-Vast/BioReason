@@ -153,11 +153,13 @@ def validate(model, dataloader, loss_fn, device, stage=1, use_amp=True, non_bloc
 # ── Checkpoint ───────────────────────────────────────────────────
 
 def save_ckpt(model, optimizer, epoch, config, path):
+    from utils.io import atomic_torch_save
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     ckpt = {"epoch": epoch, "model_state_dict": model.state_dict(), "config": config}
     if optimizer is not None:
         ckpt["optimizer_state_dict"] = optimizer.state_dict()
-    torch.save(ckpt, path)
+    atomic_torch_save(ckpt, path)
+    logger.info(f"CKPT: {path}")
 
 
 def load_ckpt(path, model=None, optimizer=None, device="cpu"):
