@@ -2,6 +2,7 @@
 for single-cell perturbation prediction.
 
 Thin CLI entry point. All logic lives in models/.
+Config loading in utils/.
 
 Usage:
   python main.py train --config config/default.yaml --h5ad dataset/perturb.h5ad --stage 1
@@ -11,46 +12,9 @@ Usage:
 
 import argparse
 import sys
-import os
-from pathlib import Path
 
-# Load .env before anything else
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
-except ImportError:
-    pass
-
-
-def load_yaml(path):
-    """Load a YAML file safely."""
-    try:
-        import yaml
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
-    except ImportError:
-        print("PyYAML required. Install: pip install pyyaml")
-        sys.exit(1)
-    except FileNotFoundError:
-        print(f"Config file not found: {path}")
-        return {}
-
-
-def merge_configs(*paths):
-    """Merge multiple YAML configs. Later values override earlier ones."""
-    merged = {}
-    for path in paths:
-        if os.path.isfile(path):
-            cfg = load_yaml(path)
-            for key, val in cfg.items():
-                if key == "includes":
-                    continue
-                if isinstance(val, dict) and isinstance(merged.get(key), dict):
-                    merged[key].update(val)
-                else:
-                    merged[key] = val
-    return merged
-
+from utils.config import load_env, merge as merge_cfg
+load_env()
 
 # ── CLI ───────────────────────────────────────────────────────
 
@@ -91,7 +55,7 @@ def build_parser():
 
 
 def cmd_train(args):
-    cfg = merge_configs(
+    cfg = merge_cfg(
         "config/default.yaml",
         "config/model.yaml",
         "config/train.yaml",
@@ -143,7 +107,7 @@ def cmd_train(args):
 
 
 def cmd_infer(args):
-    cfg = merge_configs(
+    cfg = merge_cfg(
         "config/default.yaml",
         "config/model.yaml",
         args.config,

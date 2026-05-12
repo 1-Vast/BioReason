@@ -42,7 +42,8 @@ def top_deg_mask(batch, top_k=50):
     if "deg_mask" in batch:
         return batch["deg_mask"]
     with torch.no_grad():
-        y = batch.get("y", batch["x"] + batch.get("delta", 0).to(batch["x"].device))
+        delta_default = torch.zeros_like(batch["x"])
+        y = batch.get("y", batch["x"] + batch.get("delta", delta_default))
         x = batch["x"]
         abs_delta = (y - x).abs().mean(dim=0)
         _, top_idx = torch.topk(abs_delta, min(top_k, abs_delta.size(0)))

@@ -2,47 +2,66 @@
 
 **Evidence-guided latent biological reasoning for single-cell perturbation prediction.**
 
-## Overview
-
-BioReason learns to predict single-cell perturbation responses through an intermediate **latent biological reasoning state** (`z_bio`). Instead of mapping control expression + perturbation directly to perturbed expression, BioReason first reasons about the biological mechanism of perturbation response.
+## Framework
 
 ```
-control expression + perturbation
-        ↓
-latent biological reasoning (z_bio)
-        ↓
-perturbed expression prediction
+                         ┌─────────────────────┐
+  control  ─────────────►│    CellEncoder      │──┐
+  expression             └─────────────────────┘  │
+                                                  │  cell_emb
+  perturbation ────────►│    PertEncoder      │──┤
+  (gene / drug / combo)  └─────────────────────┘  │
+                                                  ├──► context ──┐
+  covariates  ──────────►│    CovEncoder       │──┘              │
+  (cell_type/dose/time)  └─────────────────────┘                 │
+                                                                 ▼
+                                          ┌──────────────────────────┐
+  evidence  ──────► EvidenceGate ────────►│       Reasoner           │
+  (DEG/pathway)     (train only)          │  multi-step reasoning    │
+                                          │  ReasonStep × N         │
+                                          └──────────┬───────────────┘
+                                                     │
+                                                     ▼  z_bio
+                                          ┌──────────────────────────┐
+                     cell_emb ───────────►│     ExprDecoder          │
+                                          └──────────┬───────────────┘
+                                                     │
+                                                     ▼  delta_x
+                                          ┌──────────────────────────┐
+                     x_control ──────────►│     pred = x + delta     │
+                                          └──────────────────────────┘
 ```
 
-## Model Architecture
+## Architecture
 
 | Module | Role |
 |--------|------|
-| `CellEncoder` | Encodes gene expression into cell embedding |
-| `PertEncoder` | Encodes perturbation condition (gene/drug/combo) |
-| `Reasoner` | Multi-step latent biological reasoning engine |
-| `EvidenceGate` | Injects biological evidence during training (bypassed at inference) |
-| `ExprDecoder` | Decodes latent state to expression difference |
-| `BioLoss` | Combined loss with DEG weighting, latent alignment, MMD |
+| `CellEncoder` | Gene expression → cell embedding |
+| `PertEncoder` | Perturbation id / multi-hot / continuous → pert embedding |
+| `Reasoner` | Multi-step latent biological reasoning (× N ReasonStep) |
+| `ReasonStep` | Single reasoning step: FiLM + self-attention update |
+| `EvidenceGate` | Injects biological evidence into latent state (train only; inference idempotent) |
+| `ExprDecoder` | cell_emb + z_bio → delta expression |
+| `BioLoss` | expr + delta + DEG-weighted + latent-alignment + evidence + MMD |
 
 ## Three-Stage Training
 
-**Stage 1 — Warm-up**
-Basic perturbation prediction with expression + delta loss.
+```
+Stage 1              Stage 2                 Stage 3
+warm-up              evidence-guided         evidence-free
+                     latent distillation     latent alignment
 
-**Stage 2 — Evidence-Guided Latent Training**
-Biological evidence (DEG, pathway, TF scores) supervises latent reasoning states. EvidenceGate injects evidence during training.
-
-**Stage 3 — Evidence-Free Reasoning**
-Evidence is removed. Model generates latent reasoning autonomously. Latent states aligned with Stage 2 teacher.
-
-## Data Format
-
-Input: h5ad (AnnData) with:
-- `adata.X` — expression matrix [N cells x G genes]
-- `adata.obs["perturbation"]` — perturbation labels
-- `adata.obs["cell_type"]` — cell type (optional)
-- `adata.obs["dose"]`, `adata.obs["time"]`, `adata.obs["batch"]` — metadata
+x + pert             x + pert + evidence     x + pert (no evidence)
+   │                    │                       │
+   ▼                    ▼                       ▼
+Reasoner             Reasoner                Reasoner
+   │                    │                       │
+   ▼                    ▼                       ▼
+ExprDecoder          ExprDecoder            ExprDecoder
+   │                    │                       │
+  pred                pred + L_evidence      pred + L_align
+                     (save teacher latent)   (align with teacher)
+```
 
 ## Quick Start
 
@@ -71,38 +90,55 @@ python main.py infer --config config/default.yaml --checkpoint output/stage3/mod
 python main.py eval --pred output/infer/pred.npz --truth dataset/perturb.h5ad --out output/eval
 ```
 
+### Tests
+
+```bash
+python tests/check.py
+```
+
+## Data Format
+
+h5ad (AnnData): `adata.X` [N×G], `adata.obs["perturbation"]`, `adata.obs["cell_type"]` (optional).
+
 ## Configuration
 
-Edit config files in `config/`:
-- `default.yaml` — project settings, data paths
-- `model.yaml` — model architecture
-- `train.yaml` — training hyperparameters
-- `loss.yaml` — loss weights
+| File | Content |
+|------|---------|
+| `config/default.yaml` | Project, data, eval settings |
+| `config/model.yaml` | Model dims, steps, heads, dropout |
+| `config/train.yaml` | Epochs, lr, batch size, AMP, grad clip |
+| `config/loss.yaml` | Loss weights |
 
 ## Environment
 
-Copy `.env.example` to `.env` and set API keys:
+Copy `.env.example` to `.env`. Never commit `.env`.
+
+## Project Structure
+
 ```
-OPENAI_API_KEY=
-OPENAI_BASE_URL=
-LLM_MODEL=
+BioReason/
+├── main.py              # CLI entry
+├── models/              # Core model code
+│   ├── reason.py        # BioReason, Reasoner, EvidenceGate, ReasonStep
+│   ├── base.py          # MLP, ResidualBlock
+│   ├── cell.py          # CellEncoder, CovEncoder
+│   ├── pert.py          # PertEncoder
+│   ├── latent.py        # LatentBlock, FiLM, CrossBlock
+│   ├── decoder.py       # ExprDecoder
+│   ├── loss.py          # BioLoss
+│   ├── data.py          # PertDataset
+│   ├── train.py         # Training loop
+│   ├── infer.py         # Inference
+│   └── eval.py          # Metrics
+├── utils/               # Shared utilities
+│   └── config.py        # YAML config loading
+├── config/              # YAML configuration
+├── tests/
+│   └── check.py         # Import, forward, loss verification
+├── scripts/             # Batch launch scripts
+├── dataset/             # Data (git-ignored)
+└── output/              # Results (git-ignored)
 ```
-`.env` is git-ignored. Never commit real keys.
-
-## Output
-
-| File | Description |
-|------|-------------|
-| `output/stageN/model.pt` | Checkpoint |
-| `output/stage2/target_latent.pt` | Teacher latent for Stage 3 |
-| `output/infer/pred.npz` | Predictions |
-| `output/eval/metrics.json` | Evaluation metrics |
-
-**Note:** `dataset/` and `output/` are git-ignored (except README). Place data files locally.
-
-## Inspiration
-
-BioReason is inspired by latent reasoning paradigms. It adapts the principle of evidence-guided latent state learning to single-cell perturbation biology, where biological evidence shapes reasoning during training but is not required at inference.
 
 ## License
 
