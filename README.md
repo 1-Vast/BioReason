@@ -239,6 +239,40 @@ Defaults: `--use_llm` is off, `--encoder hash`, `--evidence_dim 128`,
 `--min_conf 0.5`. LLM fallback is used only for offline evidence construction,
 never inside `model.forward` or the train loop. Low-confidence priors are zeroed.
 
+### LLM safety limits
+
+LLM fallback is disabled by default and only runs when `--use_llm` is explicit.
+Even then, Stage 0 applies hard runtime limits:
+- each LLM call uses `--llm_max_tokens`, and `utils/llm.py` caps any single call at 1024 tokens
+- each preprocessing run is capped by `--max_llm_calls`
+- each preprocessing run is capped by `--max_llm_tokens`, estimated conservatively from `llm_max_tokens`
+- `--llm_cache` avoids repeated calls for the same perturbation
+- `--dry_run` performs KB lookup and writes outputs/audit without calling the LLM
+- `--llm_sleep` adds a delay after real API calls only
+
+The audit CSV records `llm_called`, `llm_cache_hit`, `llm_skipped_reason`, and
+`llm_budget_used` for every unique perturbation. It does not store full raw model
+responses.
+
+```bash
+python tools/prep.py \
+  --h5ad dataset/perturb.h5ad \
+  --out dataset/perturb_evi.h5ad \
+  --kb dataset/kb/prior.json \
+  --use_llm \
+  --max_llm_calls 20 \
+  --max_llm_tokens 10000 \
+  --llm_max_tokens 512 \
+  --llm_cache output/llm_cache.json
+
+python tools/prep.py \
+  --h5ad dataset/perturb.h5ad \
+  --out dataset/perturb_evi_dry.h5ad \
+  --kb dataset/kb/prior.json \
+  --use_llm \
+  --dry_run
+```
+
 ### KB Format
 
 ```json

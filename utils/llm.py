@@ -43,15 +43,18 @@ def test_llm_connection(strict=False):
         return {"ok": False, "reason": str(e)[:200], "model": cfg["model"]}
 
 
-def build_perturbation_prior(perturbation, genes=None, pathways=None):
+def build_perturbation_prior(perturbation, genes=None, pathways=None,
+                             max_tokens=512, temperature=0, timeout=30):
     """Strict JSON-only LLM query for perturbation prior. Returns a dict."""
     cfg = get_llm_config()
+    max_tokens = min(int(max_tokens), 1024)
+    meta = {"model": cfg["model"], "max_tokens": max_tokens}
     if not cfg["api_key"]:
-        return {"ok": False, "reason": "missing_api_key"}
+        return {"ok": False, "reason": "missing_api_key", "_llm_meta": meta}
     try:
         from openai import OpenAI
     except ImportError:
-        return {"ok": False, "reason": "openai_package_missing"}
+        return {"ok": False, "reason": "openai_package_missing", "_llm_meta": meta}
 
     gene_str = ", ".join(genes[:30]) if genes else "N/A"
     path_str = ", ".join(pathways[:10]) if pathways else "N/A"
@@ -69,12 +72,18 @@ def build_perturbation_prior(perturbation, genes=None, pathways=None):
         "Do not invent precise mechanisms. Do not include expression data."
     )
 
-    client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
-    resp = client.chat.completions.create(
-        model=cfg["model"],
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=512, temperature=0)
-    return parse_json_response(resp.choices[0].message.content)
+    client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=timeout)
+    try:
+        resp = client.chat.completions.create(
+            model=cfg["model"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens, temperature=temperature)
+        parsed = parse_json_response(resp.choices[0].message.content)
+    except Exception as e:
+        parsed = {"ok": False, "reason": str(e)[:200]}
+    if isinstance(parsed, dict):
+        parsed["_llm_meta"] = meta
+    return parsed
 
 
 def parse_json_response(text):
@@ -83,7 +92,7 @@ def parse_json_response(text):
         return text
     if text is None:
         return {"ok": False, "reason": "json_parse_failed"}
-    text = text.strip()
+    text = str(text).strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()

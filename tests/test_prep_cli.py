@@ -16,6 +16,15 @@ except ImportError:
 
 root = Path(__file__).parent.parent
 
+help_result = subprocess.run(
+    [sys.executable, str(root / "tools" / "prep.py"), "--help"],
+    cwd=root, text=True, capture_output=True, check=True,
+)
+for flag in ("--max_llm_calls", "--max_llm_tokens", "--llm_max_tokens",
+             "--llm_cache", "--llm_sleep", "--dry_run"):
+    assert flag in help_result.stdout, f"{flag} missing from prep.py --help"
+print("  1) prep help LLM safety flags OK")
+
 with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     h5ad = tmp / "perturb.h5ad"
@@ -57,6 +66,6 @@ with tempfile.TemporaryDirectory() as tmp:
     loaded = anndata.read_h5ad(out)
     assert loaded.obsm["evidence"].shape == (3, 12)
     assert "evidence_conf" in loaded.obs
-    print("  1) prep CLI OK")
+    print("  2) prep CLI OK")
 
 print("ALL OK")

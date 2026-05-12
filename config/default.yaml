@@ -35,3 +35,11 @@ prior:
   encoder: "hash"
   model_name: null
   audit: "output/prior_audit.csv"
+
+  # LLM safety
+  llm_max_tokens: 512
+  max_llm_calls: 50
+  max_llm_tokens: 30000
+  llm_cache: "output/llm_cache.json"
+  llm_sleep: 0.0
+  dry_run: false

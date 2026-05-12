@@ -70,6 +70,12 @@ def build_parser():
     pp.add_argument("--encoder", default="hash", choices=["hash", "sentence"])
     pp.add_argument("--model_name", default=None)
     pp.add_argument("--audit", default="output/prior_audit.csv")
+    pp.add_argument("--max_llm_calls", type=int, default=50)
+    pp.add_argument("--max_llm_tokens", type=int, default=30000)
+    pp.add_argument("--llm_max_tokens", type=int, default=512)
+    pp.add_argument("--llm_cache", default="output/llm_cache.json")
+    pp.add_argument("--llm_sleep", type=float, default=0.0)
+    pp.add_argument("--dry_run", action="store_true", default=False)
 
     return p
 
@@ -267,6 +273,11 @@ def cmd_prior(args):
         "--min_conf", str(args.min_conf),
         "--evidence_dim", str(args.evidence_dim),
         "--encoder", args.encoder,
+        "--max_llm_calls", str(args.max_llm_calls),
+        "--max_llm_tokens", str(args.max_llm_tokens),
+        "--llm_max_tokens", str(args.llm_max_tokens),
+        "--llm_cache", args.llm_cache,
+        "--llm_sleep", str(args.llm_sleep),
     ]
     if args.kb:
         _sys.argv.extend(["--kb", args.kb])
@@ -276,6 +287,8 @@ def cmd_prior(args):
         _sys.argv.extend(["--model_name", args.model_name])
     if args.audit:
         _sys.argv.extend(["--audit", args.audit])
+    if args.dry_run:
+        _sys.argv.append("--dry_run")
     prep_main()
 
 
