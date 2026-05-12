@@ -202,7 +202,9 @@ class BioReason(nn.Module):
         evidence:      [B, E] or None  biological evidence (train only)
         target_latent: [B, dim] or None  teacher latent for alignment
         return_latent: bool
-        detach_latent: bool  detach latent before decoder
+        detach_latent: bool  detach cell_emb gradient before decoder,
+                       prevents the model from bypassing z_bio via a
+                       direct cell_emb→delta shortcut path.
 
         Returns dict: pred, delta, latent, evidence_pred
         """

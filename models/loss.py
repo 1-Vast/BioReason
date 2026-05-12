@@ -15,7 +15,10 @@ import torch.nn.functional as F
 
 
 def mmd_loss(x, y, kernel="rbf", bandwidths=(0.1, 1.0, 10.0)):
-    """Maximum Mean Discrepancy between distributions x, y: [B, D]."""
+    """Maximum Mean Discrepancy between distributions x, y: [B, D].
+
+    Uses multi-bandwidth RBF kernel to capture distribution differences
+    at multiple scales — small bw for local, large bw for global structure."""
     xx = torch.mm(x, x.t())
     yy = torch.mm(y, y.t())
     xy = torch.mm(x, y.t())
@@ -26,6 +29,10 @@ def mmd_loss(x, y, kernel="rbf", bandwidths=(0.1, 1.0, 10.0)):
     dist_xx = rx + rx.t() - 2 * xx
     dist_yy = ry + ry.t() - 2 * yy
     dist_xy = rx + ry.t() - 2 * xy
+    # Clamp to avoid negative distances from floating-point error
+    dist_xx = dist_xx.clamp(min=0)
+    dist_yy = dist_yy.clamp(min=0)
+    dist_xy = dist_xy.clamp(min=0)
 
     loss = 0.0
     for bw in bandwidths:

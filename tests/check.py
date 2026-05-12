@@ -90,7 +90,7 @@ def check_loss():
             b["target_latent"] = torch.randn(B, dim)
         L = loss_fn(out, b, stage=stage)
         for k in keys:
-            assert L[k].item() >= 0
+            assert L[k].item() >= -1e-6, f"{k}={L[k].item()}"
         print("  stage %d loss=%.4f" % (stage, L["loss"].item()))
 
     # minimal batch — should not crash
