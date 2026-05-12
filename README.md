@@ -27,6 +27,7 @@
 - [Tests](#tests)
 - [License](#license)
 - [Citation](#citation)
+- [File Index](#file-index)
 
 ---
 
@@ -580,6 +581,79 @@ Verifies:
    - `detach_latent=True`
    - `encode()` + `predict()`
 3. **Loss** — BioLoss returns correct dict for stages 1, 2, 3 and minimal batch
+
+---
+
+## File Index
+
+Every file in this repository, with its purpose and key contents.
+
+### `./` root
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `main.py` | ~170 | CLI entry point. Parses args, loads config, calls `models.train` / `models.infer` / `models.eval`. No model logic. |
+| `README.md` | ~650 | This documentation. Framework diagrams, API reference, CLI reference, file index. |
+| `requirements.txt` | 10 | Core Python dependencies: torch, numpy, scipy, anndata, scanpy, pyyaml, python-dotenv, tqdm |
+| `.env.example` | 8 | Template for API keys. Copy to `.env` and fill in values. Never commit `.env`. |
+| `.gitignore` | 35 | Excludes `.env`, `dataset/*`, `output/*`, `archive_old`, `*.pt`, `*.h5ad`, `*.npz`, pycache, IDE files |
+| `LICENSE` | 21 | MIT License |
+
+### `models/` — Core model logic
+
+| File | Lines | Key Classes / Functions | Purpose |
+|------|-------|------------------------|---------|
+| `__init__.py` | 20 | — | Package exports: BioReason, Reasoner, EvidenceGate, ReasonStep, BioLoss, CellEncoder, PertEncoder, ExprDecoder, MLP |
+| `reason.py` ★ | 195 | `BioReason`, `Reasoner`, `ReasonStep`, `EvidenceGate` | **Core innovation file.** Full model, multi-step reasoning engine, evidence gate, single reasoning step |
+| `base.py` | 70 | `MLP`, `ResidualBlock`, `LayerNormBlock`, `EmbeddingBlock` | Reusable NN building blocks used by all other modules |
+| `cell.py` | 60 | `CellEncoder`, `CovEncoder` | Gene expression → cell embedding; metadata → covariate embedding |
+| `pert.py` | 75 | `PertEncoder` | Perturbation → embedding. Supports `id` / `multihot` / `continuous` modes; `mean` / `sum` / `attention` aggregation |
+| `latent.py` | 80 | `LatentBlock`, `FiLM`, `CrossBlock` | Latent reasoning primitives: self-attention/MLP/GRU update, feature-wise modulation, cross-attention |
+| `decoder.py` | 25 | `ExprDecoder` | cell_emb + z_bio → delta expression (3-layer MLP) |
+| `loss.py` | 115 | `BioLoss`, `mmd_loss`, `top_deg_mask` | 6-loss composite: expr, delta, DEG-weighted, latent-alignment, evidence, MMD. Stage-gated. |
+| `data.py` | 110 | `PertDataset`, `read_h5ad`, `build_dataset`, `build_loader`, `split_data` | h5ad → PyTorch Dataset. HVG selection. Covariate vocabulary. Evidence loading. |
+| `train.py` | 145 | `train_model`, `train_epoch`, `validate`, `save_ckpt`, `load_ckpt`, `save_target_latent` | Full training loop. AMP, grad clip, checkpointing. Target latent export for Stage 3. |
+| `infer.py` | 65 | `load_model`, `predict`, `save_pred` | Checkpoint loading, batch inference (no evidence), npz/h5ad save |
+| `eval.py` | 100 | `evaluate`, `save_metrics`, `mse`, `mae`, `pearson`, `spearman`, `r2`, `deg_pearson`, `top_deg_overlap` | 8 metrics. JSON + CSV export. |
+
+### `utils/` — Shared utilities
+
+| File | Lines | Key Functions | Purpose |
+|------|-------|---------------|---------|
+| `__init__.py` | 2 | — | Re-exports from config |
+| `config.py` | 30 | `load_env`, `load_yaml`, `merge`, `load` | `.env` loading, YAML parsing, multi-file config merging |
+
+### `config/` — YAML configuration
+
+| File | Purpose |
+|------|---------|
+| `default.yaml` | Project metadata, data paths/keys, eval settings |
+| `model.yaml` | Architecture: input_dim, dim, hidden, latent_steps, heads, dropout, pert_mode, pert_agg |
+| `train.yaml` | Hyperparameters: stage, epochs, batch_size, lr, weight_decay, amp, grad_clip, device, seed |
+| `loss.yaml` | Loss weights: expr, delta, deg, latent, evidence, mmd |
+
+### `scripts/` — Batch launchers
+
+| File | Purpose |
+|------|---------|
+| `run_train.bat` | `python main.py train --stage 1 --device cuda` |
+| `run_infer.bat` | `python main.py infer --checkpoint ... --pert TP53_KO` |
+| `run_eval.bat` | `python main.py eval --pred ... --truth ...` |
+
+### `tests/` — Verification
+
+| File | Purpose |
+|------|---------|
+| `check.py` | Import verification + toy forward pass (no evidence / with evidence / detach / encode+predict) + loss computation (stages 1-3, minimal batch) |
+
+### `dataset/` + `output/` — Data & results (git-ignored)
+
+| File | Purpose |
+|------|---------|
+| `dataset/README.md` | h5ad format documentation |
+| `dataset/.gitkeep` | Ensures directory exists in git |
+| `output/README.md` | Output directory structure |
+| `output/.gitkeep` | Ensures directory exists in git |
 
 ---
 
