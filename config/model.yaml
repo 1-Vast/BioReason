@@ -8,9 +8,14 @@ model:
   latent_steps: 8
   heads: 4
   dropout: 0.1
+
+  # core ablations
+  reason_mode: "transformer"     # transformer | mlp
+  evidence_mode: "film"          # film | add | cross
   residual: true
+
+  # perturbation
   pert_mode: "id"
   pert_agg: "mean"
   evidence_dim: null
-  evidence_gate: "confidence"
   use_evidence_conf: true

@@ -5,7 +5,7 @@ from .cell import CellEncoder
 from .pert import PertEncoder
 from .decoder import ExprDecoder
 from .loss import BioLoss
-from .base import MLP, ResidualBlock, LayerNormBlock, EmbeddingBlock
+from .base import MLP, ResidualBlock, EmbeddingBlock
 
 __all__ = [
     "BioReason",
@@ -18,6 +18,5 @@ __all__ = [
     "ExprDecoder",
     "MLP",
     "ResidualBlock",
-    "LayerNormBlock",
     "EmbeddingBlock",
 ]

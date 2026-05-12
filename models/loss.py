@@ -44,6 +44,8 @@ class BioLoss(nn.Module):
         self.weights = weights or {"expr":1.0,"delta":1.0,"deg":2.0,"latent":1.0,"evidence":1.0,"mmd":0.1,"trust":0.0}
         self.top_deg = self.weights.pop("top_deg", 50)
         self.latent_metric = self.weights.pop("latent_metric", "cosine")
+        if self.latent_metric not in ("cosine", "mse"):
+            raise ValueError(f"Unsupported latent_metric: {self.latent_metric}")
         self.mmd_max_samples = self.weights.pop("mmd_max_samples", 128)
         self.mmd_every = self.weights.pop("mmd_every", 1)
         self.trust_w = self.weights.pop("trust", 0.0)

@@ -86,6 +86,26 @@ Evidence never enters the decoder directly; decoder input remains `cell_emb + z_
 
 ---
 
+## Code cleanup and ablation design
+
+Removed dead code:
+- `CrossBlock` was removed because cross evidence fusion is handled by `EvidenceGate(mode="cross")`.
+- `LayerNormBlock` was removed because the model uses `MLP` and `ResidualBlock`.
+- GRU reason mode was removed because BioReason models static single-cell perturbation responses, not temporal sequences.
+- `return_all` step tracking was removed because all-step latent alignment is future work.
+
+Kept ablation knobs:
+- `reason_mode`: `transformer` / `mlp`
+- `evidence_mode`: `film` / `add` / `cross`
+- `latent_metric`: `cosine` / `mse`
+- `residual`: `true` / `false`
+
+Do not interpret this cleanup as removing future research directions. All-step
+latent alignment and VLPO-style biological latent RL remain future work. Current
+BioReason focuses on SFT-style evidence-guided latent distillation.
+
+---
+
 ## Framework
 
 ```
@@ -290,7 +310,7 @@ BioReason includes a **confidence-aware evidence gate** that modulates how stron
 ```yaml
 # config/model.yaml
 model:
-  evidence_gate: "confidence"   # enables trust scoring
+  evidence_mode: "film"         # film | add | cross
   use_evidence_conf: true       # uses confidence head
 
 # config/loss.yaml
@@ -473,7 +493,14 @@ Tests LLM API connectivity. No data sent.
 
 6. **Dataset target construction**: default is `group_mean` (y = group mean expression). Other modes: `control_to_pert` (x from control, y from perturbed group), `identity` (debug only).
 
-7. **API keys**: read from `.env` via `python-dotenv`. Never hardcoded. `.env` is git-ignored.
+7. **API keys**: read from `.env` via `python-dotenv`. Never hardcoded. `.env` is git-ignored. For a DeepSeek OpenAI-compatible endpoint, create a local `.env` with:
+
+   ```env
+   OPENAI_API_KEY=your_deepseek_key
+   OPENAI_BASE_URL=https://api.deepseek.com
+   OPENAI_MODEL=deepseek-chat
+   LLM_PROVIDER=deepseek
+   ```
 
 8. **Control input**: `use_control_as_input=True` draws input from the control pool (cell-type matched when possible), not the perturbed cell itself. This ensures realistic baseline for counterfactual prediction.
 
@@ -535,7 +562,7 @@ BioReason is designed for real-world single-cell datasets (10⁵–10⁶ cells):
 | `base.py` | `MLP`, `ResidualBlock` |
 | `cell.py` | `CellEncoder`, `CovEncoder` |
 | `pert.py` | `PertEncoder` (id/multihot/continuous) |
-| `latent.py` | `LatentBlock`, `FiLM`, `CrossBlock` |
+| `latent.py` | `LatentBlock`, `FiLM` |
 | `decoder.py` | `ExprDecoder` |
 
 ### `utils/`

@@ -1,4 +1,4 @@
-"""Basic building blocks: MLP, ResidualBlock, LayerNormBlock, EmbeddingBlock."""
+"""Basic building blocks: MLP, ResidualBlock, EmbeddingBlock."""
 
 import torch
 import torch.nn as nn
@@ -48,20 +48,6 @@ class ResidualBlock(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)
         return residual + x
-
-
-class LayerNormBlock(nn.Module):
-    """LayerNorm + Linear + Act + Dropout."""
-
-    def __init__(self, in_dim, out_dim, dropout=0.1, act=nn.GELU):
-        super().__init__()
-        self.norm = nn.LayerNorm(in_dim)
-        self.linear = nn.Linear(in_dim, out_dim)
-        self.act = act()
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.dropout(self.act(self.linear(self.norm(x))))
 
 
 class EmbeddingBlock(nn.Module):

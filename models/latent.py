@@ -1,9 +1,4 @@
-"""Latent reasoning backbone components.
-
-- LatentBlock: single-step latent state update
-- CrossBlock: cross-attention between latent and condition
-- FiLM: feature-wise linear modulation for conditioning
-"""
+"""Latent reasoning backbone components."""
 
 import torch
 import torch.nn as nn
@@ -28,7 +23,12 @@ class FiLM(nn.Module):
 
 
 class LatentBlock(nn.Module):
-    """Single-step latent reasoning block. Supports transformer/mlp/gru modes."""
+    """Single-step latent reasoning block.
+
+    Supported modes:
+    - transformer: context-aware self-attention block
+    - mlp: residual MLP block for ablation
+    """
 
     def __init__(self, dim, hidden=None, heads=4, dropout=0.1, mode="transformer"):
         super().__init__()
@@ -44,8 +44,8 @@ class LatentBlock(nn.Module):
             )
         elif mode == "mlp":
             self.block = ResidualBlock(dim, hidden=hidden, dropout=dropout)
-        elif mode == "gru":
-            self.gru = nn.GRUCell(dim, dim)
+        else:
+            raise ValueError(f"Unsupported LatentBlock mode: {mode}")
 
     def forward(self, z, context=None):
         """z: [B, dim] -> [B, dim]"""
@@ -59,24 +59,3 @@ class LatentBlock(nn.Module):
             return z_out
         elif self.mode == "mlp":
             return self.block(z)
-        elif self.mode == "gru":
-            return self.gru(z, z)
-
-
-class CrossBlock(nn.Module):
-    """Cross-attention: latent attends to condition tokens."""
-
-    def __init__(self, dim, heads=4, dropout=0.1):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(dim, heads, dropout=dropout, batch_first=True)
-        self.norm = nn.LayerNorm(dim)
-        self.ffn = nn.Sequential(
-            nn.Linear(dim, dim * 4), nn.GELU(), nn.Dropout(dropout),
-            nn.Linear(dim * 4, dim), nn.Dropout(dropout),
-        )
-        self.norm2 = nn.LayerNorm(dim)
-
-    def forward(self, query, key_value):
-        attn_out, _ = self.attn(query, key_value, key_value)
-        x = self.norm(query + attn_out)
-        return self.norm2(x + self.ffn(x))

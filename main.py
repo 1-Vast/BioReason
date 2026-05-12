@@ -133,7 +133,9 @@ def cmd_train(args):
                        hidden=cfg["model"].get("hidden",512),
                        steps=cfg["model"].get("latent_steps",8),
                        heads=cfg["model"].get("heads",4), dropout=0, pert_mode="id",
-                       num_perts=dataset.n_perts, evidence_dim=dataset.evidence_dim).to(args.device),
+                       num_perts=dataset.n_perts, evidence_dim=dataset.evidence_dim,
+                       reason_mode=cfg["model"].get("reason_mode", "transformer"),
+                       evidence_mode=cfg["model"].get("evidence_mode", "film")).to(args.device),
             train_loader, BioLoss(cfg.get("loss",{})),
             torch.optim.AdamW([torch.zeros(1, requires_grad=True)]),
             args.device, stage=args.stage, batches=train_cfg.get("profile_batches", 20))
@@ -156,6 +158,8 @@ def cmd_train(args):
     evidence_dim = dataset.evidence_dim or model_cfg.get("evidence_dim")
     model_cfg["evidence_dim"] = evidence_dim
     model_cfg["cov_dims"] = dict(dataset.cov_dims)
+    model_cfg.setdefault("reason_mode", "transformer")
+    model_cfg.setdefault("evidence_mode", "film")
 
     if args.stage == 3:
         path = args.target_latent or train_cfg.get("target_latent")
@@ -170,7 +174,10 @@ def cmd_train(args):
                        heads=model_cfg.get("heads", 4), dropout=model_cfg.get("dropout", 0.1),
                        residual=model_cfg.get("residual", True), pert_mode=model_cfg.get("pert_mode", "id"),
                        pert_agg=model_cfg.get("pert_agg", "mean"), num_perts=dataset.n_perts,
-                       evidence_dim=evidence_dim, cov_dims=dict(dataset.cov_dims))
+                       evidence_dim=evidence_dim, cov_dims=dict(dataset.cov_dims),
+                       reason_mode=model_cfg.get("reason_mode", "transformer"),
+                       evidence_mode=model_cfg.get("evidence_mode", "film"),
+                       use_evidence_conf=model_cfg.get("use_evidence_conf", True))
     loss_fn = BioLoss(cfg.get("loss", {}))
     train_model(model, train_loader, val_loader, {**cfg, **train_cfg}, loss_fn=loss_fn)
 

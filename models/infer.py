@@ -29,6 +29,9 @@ def load_model(checkpoint_path, model_class=None, device=None):
         num_perts=model_cfg.get("num_perts", 10000),
         evidence_dim=model_cfg.get("evidence_dim"),
         cov_dims=model_cfg.get("cov_dims", {}),
+        reason_mode=model_cfg.get("reason_mode", "transformer"),
+        evidence_mode=model_cfg.get("evidence_mode", "film"),
+        use_evidence_conf=model_cfg.get("use_evidence_conf", True),
     )
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state, strict=False)

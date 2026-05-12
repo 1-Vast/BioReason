@@ -20,7 +20,6 @@ Classes:
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .base import MLP
 from .cell import CellEncoder, CovEncoder
@@ -42,7 +41,7 @@ class ReasonStep(nn.Module):
         self.film = FiLM(dim, dim)
 
     def forward(self, z, context):
-        return self.latent_block(self.film(z, context))
+        return self.latent_block(self.film(z, context), context=context)
 
 
 class EvidenceGate(nn.Module):
@@ -66,6 +65,8 @@ class EvidenceGate(nn.Module):
         elif mode == "cross":
             self.gate = nn.MultiheadAttention(dim, 4, batch_first=True, dropout=dropout)
             self.norm = nn.LayerNorm(dim)
+        else:
+            raise ValueError(f"Unsupported evidence mode: {mode}")
         if use_conf:
             self.score = nn.Sequential(
                 nn.Linear(dim * 2, dim), nn.GELU(), nn.Linear(dim, 1), nn.Sigmoid()
@@ -103,44 +104,43 @@ class Reasoner(nn.Module):
     """
 
     def __init__(self, dim, steps=8, hidden=None, heads=4, dropout=0.1,
-                 evidence_mode="film", use_evidence_conf=True):
+                 evidence_mode="film", reason_mode="transformer",
+                 use_evidence_conf=True):
         super().__init__()
         self.dim = dim
         self.steps = steps
+        if reason_mode not in ("transformer", "mlp"):
+            raise ValueError(f"Unsupported reason_mode: {reason_mode}")
+        self.reason_mode = reason_mode
         self.context_fuse = MLP(dim * 3, dim, hidden=hidden, layers=2, dropout=dropout)
         self.init_proj = nn.Linear(dim, dim)
         self.reason_steps = nn.ModuleList([
-            ReasonStep(dim, hidden=hidden, heads=heads, dropout=dropout)
+            ReasonStep(dim, hidden=hidden, heads=heads, dropout=dropout, mode=reason_mode)
             for _ in range(steps)
         ])
         self.evidence_gate = EvidenceGate(dim, dropout=dropout, mode=evidence_mode, use_conf=use_evidence_conf)
         self.out_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim))
 
-    def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None, return_all=False, return_trust=False):
+    def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None, return_trust=False):
         B = cell_emb.size(0)
         parts = [cell_emb, pert_emb]
         parts.append(cov_emb if cov_emb is not None
                       else torch.zeros(B, self.dim, device=cell_emb.device))
         context = self.context_fuse(torch.cat(parts, dim=-1))
         z = self.init_proj(context)
-        z_all = []; trust_all = []
-        for i in range(self.steps):
+        trust_all = []
+        for _ in range(self.steps):
             if evidence is not None and return_trust:
                 z, trust = self.evidence_gate(z, evidence, context=context, return_score=True)
                 trust_all.append(trust)
             else:
                 z = self.evidence_gate(z, evidence)
-            z = self.reason_steps[i](z, context)
-            if return_all:
-                z_all.append(z)
+            z = self.reason_steps[_](z, context)
         z = self.out_proj(z)
-        if return_all and return_trust:
-            t = torch.stack(trust_all, dim=1).mean(dim=1) if trust_all else None
-            return z, z_all, t
         if return_trust:
             t = torch.stack(trust_all, dim=1).mean(dim=1) if trust_all else None
             return z, t
-        return (z, z_all) if return_all else z
+        return z
 
 
 class BioReason(nn.Module):
@@ -153,12 +153,14 @@ class BioReason(nn.Module):
     def __init__(self, input_dim, dim=256, hidden=512, steps=8, heads=4,
                  dropout=0.1, residual=True, pert_mode="id", pert_agg="mean",
                  num_perts=10000, cov_dims=None, evidence_dim=None,
-                 evidence_mode="film", use_evidence_conf=True):
+                 evidence_mode="film", reason_mode="transformer",
+                 use_evidence_conf=True):
         super().__init__()
         self.input_dim = input_dim
         self.dim = dim
         self.residual = residual
         self.evidence_dim = evidence_dim
+        self.reason_mode = reason_mode
 
         self.cell_encoder = CellEncoder(input_dim, dim, hidden=hidden, dropout=dropout)
         self.pert_encoder = PertEncoder(num_perts, dim, hidden=hidden,
@@ -174,6 +176,7 @@ class BioReason(nn.Module):
 
         self.reasoner = Reasoner(dim, steps=steps, hidden=hidden, heads=heads,
                                    dropout=dropout, evidence_mode=evidence_mode,
+                                   reason_mode=reason_mode,
                                    use_evidence_conf=use_evidence_conf)
         self.decoder = ExprDecoder(dim, input_dim, hidden=hidden, dropout=dropout)
 
