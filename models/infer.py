@@ -1,24 +1,20 @@
-"""Inference for BioReason — counterfactual perturbation prediction.
+"""Inference for BioReason — GPU-optimized counterfactual prediction.
 
-Uses checkpoint vocabulary and gene order for reproducibility.
+Uses inference_mode, tqdm, per-batch-only CPU transfer.
 """
 
 import torch
 import numpy as np
 from pathlib import Path
-from torch.cuda.amp import autocast
 
 
 def load_model(checkpoint_path, model_class=None, device=None):
-    """Load BioReason from checkpoint with all metadata."""
     if model_class is None:
         from .reason import BioReason
         model_class = BioReason
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     config = ckpt.get("config", {})
     model_cfg = config.get("model", {})
-
-    # Use checkpoint dimensions (not inference adata)
     model = model_class(
         input_dim=model_cfg.get("input_dim", 2000),
         dim=model_cfg.get("dim", 256),
@@ -41,67 +37,82 @@ def load_model(checkpoint_path, model_class=None, device=None):
     return model, config
 
 
-def predict(model, dataloader, device="cuda", use_amp=True, target_pert=None):
+def predict(model, dataloader, device="cuda", use_amp=True, target_pert=None,
+            non_blocking=True, progress=True):
+    from utils.device import move_to_device, gpu_mem_gb
+    from utils.log import make_bar, update_bar_postfix, format_speed
+    import time
+
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     model = model.to(device); model.eval()
-    preds, deltas, lats, metas, pert_list = [], [], [], [], []
-    pert_strs = []
-    with torch.no_grad():
-        for batch in dataloader:
-            x = batch["x"].to(device)
-            pert = batch["pert"].to(device) if target_pert is None else \
-                   torch.full_like(batch["pert"].to(device), target_pert)
-            cov = {k: v.to(device) for k, v in batch.get("cov", {}).items()}
-            with autocast(enabled=use_amp):
-                out = model(x, pert, cov=cov, evidence=None, return_latent=True)
-            preds.append(out["pred"].cpu().numpy())
-            deltas.append(out["delta"].cpu().numpy())
+    preds, deltas, lats, metas, pert_list, pert_strs = [], [], [], [], [], []
+    n_cells = 0
+
+    bar = make_bar(dataloader, enable=progress, desc="Infer")
+
+    with torch.inference_mode():
+        for batch_cpu in bar:
+            b = move_to_device(batch_cpu, device, non_blocking=non_blocking)
+            pert = b["pert"] if target_pert is None else \
+                   torch.full_like(b["pert"], target_pert)
+
+            autocast_ctx = torch.amp.autocast("cuda", enabled=use_amp) if torch.cuda.is_available() and use_amp else __import__("contextlib").nullcontext()
+            with autocast_ctx:
+                out = model(b["x"], pert, cov=b.get("cov"), evidence=None, return_latent=True)
+
+            # Move to CPU only after batch forward
+            preds.append(out["pred"].detach().cpu())
+            deltas.append(out["delta"].detach().cpu())
             if out.get("latent") is not None:
-                lats.append(out["latent"].cpu().numpy())
-            metas.extend(batch.get("meta", [{}]))
-            pert_list.extend(pert.cpu().tolist())
-            pert_strs.extend(batch.get("pert_str", []))
-    return (np.concatenate(preds, axis=0),
-            np.concatenate(deltas, axis=0),
-            np.concatenate(lats, axis=0) if lats else np.array([]),
-            metas,
-            np.array(pert_list),
-            pert_strs)
+                lats.append(out["latent"].detach().cpu())
+            metas.extend(b.get("meta", []))
+            pert_list.extend(pert.detach().cpu().tolist())
+            pert_strs.extend(b.get("pert_str", []))
+            n_cells += b["x"].size(0)
+
+            if progress:
+                update_bar_postfix(bar, extra={"cells": n_cells, "mem": f"{gpu_mem_gb():.1f}GB"})
+
+    # Concat on CPU once
+    preds = torch.cat(preds, dim=0).numpy()
+    deltas = torch.cat(deltas, dim=0).numpy()
+    latents = torch.cat(lats, dim=0).numpy() if lats else np.array([])
+
+    return preds, deltas, latents, metas, np.array(pert_list), pert_strs
 
 
-def predict_counterfactual(model, dataset, pert, batch_size=128, device="cuda"):
+def predict_counterfactual(model, dataset, pert, batch_size=128, device="cuda",
+                            **kwargs):
     dataset.set_target_pert(pert)
     from .data import build_loader
     loader = build_loader(dataset, shuffle=False, batch_size=batch_size)
-    preds, deltas, latents, metas, pert_arr, pert_strs = predict(
-        model, loader, device=device, target_pert=dataset._target_pert_id)
-    return preds, deltas, latents, metas, pert_arr, pert_strs
+    return predict(model, loader, device=device, target_pert=dataset._target_pert_id, **kwargs)
 
 
 def save_pred(preds, deltas, latents, metas, pert_arr, pert_strs, output_dir, prefix="pred"):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Saving to {output_dir}/{prefix}.npz ... ", end="", flush=True)
 
     np.savez(output_dir / f"{prefix}.npz",
              preds=preds, deltas=deltas, latents=latents,
              pert=pert_arr, pert_str=np.array(pert_strs),
              indices=np.array([m.get("idx", i) for i, m in enumerate(metas)]))
+    print("OK")
 
     try:
         import scanpy as sc
         adata = sc.AnnData(X=preds)
         adata.obs["predicted_perturbation_id"] = pert_arr
         adata.obs["predicted_perturbation"] = pert_strs
-        adata.obs["source_idx"] = [m.get("source_idx", m.get("idx", i))
-                                    for i, m in enumerate(metas)]
-        if deltas is not None:
-            adata.obsm["delta"] = deltas
-        if latents is not None and latents.size > 0:
-            adata.obsm["latent"] = latents
+        adata.obs["source_idx"] = [m.get("source_idx", m.get("idx", i)) for i, m in enumerate(metas)]
+        if deltas is not None: adata.obsm["delta"] = deltas
+        if latents is not None and latents.size > 0: adata.obsm["latent"] = latents
+        print(f"Saving h5ad ... ", end="", flush=True)
         adata.write_h5ad(output_dir / f"{prefix}.h5ad")
+        print("OK")
     except ImportError:
         pass
-    print(f"Predictions saved to {output_dir}")
 
 
 save_predictions = save_pred

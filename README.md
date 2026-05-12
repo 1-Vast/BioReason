@@ -168,6 +168,59 @@ python tests/check.py
 
 ---
 
+## Performance and GPU Usage
+
+### Recommended Commands
+
+**Linux server (multi-worker):**
+```bash
+python main.py train --h5ad dataset/perturb.h5ad --stage 1 --device cuda \
+  --batch_size 256 --num_workers 4 --pin_memory --progress
+```
+
+**Windows:**
+```bash
+python main.py train --h5ad dataset/perturb.h5ad --stage 1 --device cuda \
+  --batch_size 128 --num_workers 0 --progress
+```
+
+### Profiling
+
+```bash
+python main.py train --h5ad dataset/perturb.h5ad --stage 1 --profile --profile_batches 20
+```
+
+Outputs: data wait time, H2D transfer time, forward/backward timings, GPU memory, and optimization suggestions.
+
+### GPU Data Flow
+
+```
+DataLoader (CPU, pin_memory) → non_blocking .to(device) → forward (GPU)
+→ loss (GPU) → backward (GPU) → optimizer step (GPU)
+→ per-epoch: .detach() summary → checkpoint save
+```
+
+- **No `.cpu().numpy()` inside training step** — all computation stays on GPU.
+- **No per-step `.item()` spam** — losses accumulated via `.detach().item()` at `log_every` intervals.
+- **Checkpoint saved only at epoch end** — zero I/O inside training loop.
+- **`.empty_cache()` only if configured** — not called per step.
+- **`tqdm` progress bar** with live loss + GPU memory postfix. No per-batch `print()`.
+- **`torch.inference_mode()` for validation and inference** — disables autograd tracking.
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--batch_size N` | Batch size |
+| `--num_workers N` | DataLoader workers (0 for Windows) |
+| `--pin_memory` / `--no_pin_memory` | Enable/disable pinned memory |
+| `--amp` / `--no_amp` | Enable/disable automatic mixed precision |
+| `--progress` / `--no_progress` | Show/hide tqdm progress bars |
+| `--profile` | Run profiling before training |
+| `--compile` | Enable torch.compile (experimental) |
+
+---
+
 ## CLI Reference
 
 ### `python main.py train`

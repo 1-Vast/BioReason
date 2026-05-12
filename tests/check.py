@@ -1,5 +1,5 @@
 """BioReason: run all verification tests."""
-import sys
+import sys, traceback
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -7,21 +7,28 @@ tests = [
     "test_forward", "test_loss", "test_data", "test_infer",
     "test_llm_config", "test_control_input", "test_vocab_checkpoint",
     "test_gene_align", "test_target_latent_mask", "test_cov_dims",
+    "test_device_flow", "test_loader_perf_flags",
+    "test_progress_smoke", "test_infer_progress",
 ]
-failed = []
+passed, failed, skipped = 0, 0, 0
+
 for name in tests:
+    sys.stdout.write(f"[....] {name}\r")
+    sys.stdout.flush()
     try:
         mod = __import__(f"tests.{name}", fromlist=[""])
-        print(f"\n{'='*40}")
+        passed += 1
+        print(f"[PASS] {name}")
     except SystemExit as e:
-        if e.code != 0:
-            failed.append(name)
+        if e.code == 0:
+            passed += 1; print(f"[PASS] {name}")
+        else:
+            failed += 1; print(f"[FAIL] {name} (exit {e.code})")
     except Exception as e:
-        print(f"  ERROR: {e}")
-        failed.append(name)
+        failed += 1
+        print(f"[FAIL] {name}: {e}")
 
+print(f"\n{'='*40}")
+print(f"PASS: {passed}  FAIL: {failed}  SKIP: {skipped}")
 if failed:
-    print(f"\nFAILED: {failed}")
     sys.exit(1)
-else:
-    print(f"\nALL {len(tests)} TESTS PASSED")

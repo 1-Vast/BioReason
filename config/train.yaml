@@ -13,4 +13,17 @@ train:
   save_dir: "output"
   target_latent: null
   latent_only: false
+
+  # performance
   num_workers: 0
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  non_blocking: true
+  progress: true
+  log_every: 20
+  profile: false
+  profile_batches: 20
+  monitor_gpu: true
+  empty_cache: false
+  compile: false

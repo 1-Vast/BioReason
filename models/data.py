@@ -380,9 +380,17 @@ def build_dataset(path, config):
     )
 
 
-def build_loader(dataset, batch_size=128, shuffle=True, num_workers=0):
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
-                       num_workers=num_workers, collate_fn=bio_collate_fn)
+def build_loader(dataset, batch_size=128, shuffle=True, num_workers=0,
+                 pin_memory=False, persistent_workers=False, prefetch_factor=2,
+                 drop_last=False):
+    """Build DataLoader. Safe for Windows (num_workers=0 skips multiprocessing flags)."""
+    kwargs = dict(batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
+                  collate_fn=bio_collate_fn, num_workers=num_workers,
+                  pin_memory=pin_memory)
+    if num_workers > 0:
+        kwargs["persistent_workers"] = persistent_workers
+        kwargs["prefetch_factor"] = prefetch_factor
+    return DataLoader(dataset, **kwargs)
 
 
 def split_data(dataset, train_ratio=0.9, seed=42):
@@ -391,6 +399,15 @@ def split_data(dataset, train_ratio=0.9, seed=42):
     n_val = len(dataset) - n_train
     return random_split(dataset, [n_train, n_val],
                          generator=torch.Generator().manual_seed(seed))
+
+
+def batch_summary(batch):
+    """Return compact shape summary of a collated batch."""
+    s = {"x": tuple(batch["x"].shape), "y": tuple(batch["y"].shape),
+         "pert": tuple(batch["pert"].shape)}
+    for k in ("evidence", "target_latent"):
+        s[k] = tuple(batch[k].shape) if batch.get(k) is not None else None
+    return s
 
 
 load_h5ad = read_h5ad
