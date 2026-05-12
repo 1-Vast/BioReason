@@ -13,6 +13,20 @@ train:
   save_dir: "output"
   target_latent: null
   latent_only: false
+  evi_warm: true
+  evi_warm_epochs: 10
+  evi_warm_margin: 0.02
+  evi_log: true
+  latent_only_bp: true
+  latent_only_modules:
+    - reasoner
+    - evidence_encoder
+    - evidence_head
+    - pert_encoder
+    - cov_encoder
+  stage3_init: "stage1"
+  stage1_ckpt: "output/stage1/model.pt"
+  stage2_ckpt: "output/stage2/model.pt"
 
   # performance
   num_workers: 0

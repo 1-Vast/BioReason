@@ -44,7 +44,7 @@ def test_llm_connection(strict=False):
 
 
 def build_perturbation_prior(perturbation, genes=None, pathways=None):
-    """Strict JSON-only LLM query for perturbation prior. Max 512 tokens."""
+    """Strict JSON-only LLM query for perturbation prior. Returns a dict."""
     cfg = get_llm_config()
     if not cfg["api_key"]:
         return {"ok": False, "reason": "missing_api_key"}
@@ -66,7 +66,7 @@ def build_perturbation_prior(perturbation, genes=None, pathways=None):
         '"tf_activity":[{"tf":"name","direction":"up|down|unknown"}],'
         '"marker_genes":[{"gene":"name","direction":"up|down|unknown"}]}\n\n'
         "If biological mechanism is uncertain, set confidence_score below 0.5.\n"
-        "Do not invent mechanisms. Do not include expression data."
+        "Do not invent precise mechanisms. Do not include expression data."
     )
 
     client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
@@ -74,17 +74,19 @@ def build_perturbation_prior(perturbation, genes=None, pathways=None):
         model=cfg["model"],
         messages=[{"role": "user", "content": prompt}],
         max_tokens=512, temperature=0)
-    return resp.choices[0].message.content
+    return parse_json_response(resp.choices[0].message.content)
 
 
 def parse_json_response(text):
     """Extract JSON from text robustly. Returns dict."""
+    if isinstance(text, dict):
+        return text
+    if text is None:
+        return {"ok": False, "reason": "json_parse_failed"}
     text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:]) if lines[0].startswith("```") else text
-    if text.endswith("```"):
-        text = text[:-3].strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:

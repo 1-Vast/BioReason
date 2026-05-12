@@ -6,6 +6,10 @@ loss:
   deg: 2.0
   latent: 1.0
   evidence: 1.0
+  evi_gain: 0.5
+  evi_shift: 0.0
+  evi_recon: 1.0
+  latent_align_scope: "final"
   mmd: 0.1
   trust: 0.0
   trust_target: null

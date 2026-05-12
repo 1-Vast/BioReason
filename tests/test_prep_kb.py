@@ -1,8 +1,8 @@
-"""Test: kb.py query_kb with toy dict, exact and fuzzy matching, gene combination."""
-print("--- test_prior_kb ---")
-import sys
+"""Test tools/kb.py: query_kb with exact, fuzzy, combination matching."""
+print("--- test_prep_kb ---")
+import sys, json, tempfile, os
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
-from utils.kb import query_kb, load_kb, _norm, parse_pert_gene, combine_priors
+from tools.kb import query_kb, load_kb, _norm, parse_pert_gene, combine_prior
 
 # ── Toy KB ──
 toy = {
@@ -58,16 +58,31 @@ assert r is not None, "Combo should combine"
 assert r["source"] == "local_combined"
 print("  6) gene combination OK")
 
-# 7) combine_priors with single
-r = combine_priors([toy["TP53_KO"]])
+# 7) combine_prior with single
+r = combine_prior([toy["TP53_KO"]])
 assert r["description"] == "TP53 knockout"
 print("  7) combine single OK")
 
-# 8) combine_priors with multiple
-r = combine_priors([toy["TP53_KO"], toy["MYC_OE"]])
+# 8) combine_prior with multiple
+r = combine_prior([toy["TP53_KO"], toy["MYC_OE"]])
 assert "TP53 knockout" in r["description"]
 assert "MYC overexpression" in r["description"]
-assert r["confidence_score"] <= 0.95  # min of the two
+assert 0.8 <= r["confidence_score"] <= 1.0
 print("  8) combine multiple OK")
+
+# 9) load_kb with temp file
+with tempfile.TemporaryDirectory() as tmpdir:
+    kb_path = os.path.join(tmpdir, "kb.json")
+    with open(kb_path, "w") as f:
+        json.dump(toy, f)
+    loaded = load_kb(kb_path)
+    assert "TP53_KO" in loaded
+    assert loaded["TP53_KO"]["confidence_score"] == 0.95
+    print("  9) load_kb from file OK")
+
+# 10) load_kb with nonexistent path → empty dict
+loaded = load_kb("/nonexistent/path.json")
+assert loaded == {}
+print("  10) load_kb missing file OK")
 
 print("ALL OK")

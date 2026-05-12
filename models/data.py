@@ -196,7 +196,7 @@ class PertDataset(Dataset):
             ev = adata.obsm[evidence_key]
             self.evidence_dim = ev.shape[1] if ev.ndim == 2 else 1
 
-        # Evidence confidence
+        # Evidence confidence defaults to 1.0 when evidence exists but no obs field is present.
         self.has_evidence_conf = "evidence_conf" in adata.obs
 
         # Group means (sparse-safe)
@@ -327,9 +327,12 @@ class PertDataset(Dataset):
                 cov[key] = torch.tensor(vocab.get(val, 0), dtype=torch.long)
 
         evidence = None
+        evidence_conf = None
         if self.evidence_key and self.evidence_key in self.adata.obsm:
             ev = self.adata.obsm[self.evidence_key][idx]
             evidence = torch.tensor(np.atleast_1d(np.squeeze(ev)), dtype=torch.float32)
+            conf = float(obs.get("evidence_conf", 1.0)) if self.has_evidence_conf else 1.0
+            evidence_conf = torch.tensor(conf, dtype=torch.float32)
 
         target_latent = None; mask = False
         if self.target_latents is not None and idx < len(self.target_latents):
@@ -343,7 +346,7 @@ class PertDataset(Dataset):
             "x": x, "y": y,
             "pert": torch.tensor(pert_id, dtype=torch.long),
             "pert_str": pert_str, "cov": cov, "evidence": evidence,
-            "evidence_conf": torch.tensor(float(obs.get("evidence_conf", 1.0)), dtype=torch.float32) if self.has_evidence_conf else None,
+            "evidence_conf": evidence_conf,
             "target_latent": target_latent,
             "target_latent_mask": torch.tensor(mask, dtype=torch.bool),
             "meta": {"idx": idx, "source_idx": idx, "target_idx": -1,
@@ -399,7 +402,7 @@ def split_data(dataset, train_ratio=0.9, seed=42):
 def batch_summary(batch):
     s = {"x": tuple(batch["x"].shape), "y": tuple(batch["y"].shape),
          "pert": tuple(batch["pert"].shape)}
-    for k in ("evidence", "target_latent"):
+    for k in ("evidence", "evidence_conf", "target_latent"):
         s[k] = tuple(batch[k].shape) if batch.get(k) is not None else None
     return s
 

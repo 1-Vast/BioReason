@@ -241,13 +241,29 @@ class BioReason(nn.Module):
         return x + delta if self.residual else delta
 
     def freeze_except_reasoner(self):
-        """Freeze all modules except pert_encoder, reasoner, evidence heads."""
+        """Backward-compatible alias for latent-only BP training."""
+        self.freeze_main_path_for_latent()
+
+    def set_trainable(self, names):
+        """Only modules whose name contains one of `names` remain trainable."""
+        names = tuple(names or ())
         for name, param in self.named_parameters():
-            if any(x in name for x in ("pert_encoder", "reasoner",
-                                         "evidence_encoder", "evidence_head")):
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
+            param.requires_grad = any(key in name for key in names)
+
+    def freeze_main_path_for_latent(self):
+        """Freeze cell_encoder and decoder for latent-only backpropagation.
+
+        Monet latent-only backpropagation maps here to BioReason latent-only BP:
+        evidence/alignment losses update the latent generation path instead of
+        being minimized through cell_encoder or decoder shortcuts.
+        """
+        self.set_trainable((
+            "reasoner",
+            "evidence_encoder",
+            "evidence_head",
+            "pert_encoder",
+            "cov_encoder",
+        ))
 
     def unfreeze_all(self):
         for param in self.parameters():

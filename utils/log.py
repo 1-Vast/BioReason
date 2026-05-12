@@ -35,7 +35,8 @@ def short_float(x, width=4):
 def format_loss(loss_dict, prefix=""):
     """Format loss dict to compact string."""
     parts = []
-    for k in ["loss", "expr", "delta", "deg", "latent", "evidence", "mmd"]:
+    for k in ["loss", "expr", "delta", "deg", "latent", "evidence", "mmd",
+              "evi_gain", "z_shift", "evi_rec", "latent_align", "latent_only"]:
         v = loss_dict.get(k)
         if v is not None and abs(v) > 1e-10:
             parts.append(f"{prefix}{k}={short_float(v)}")

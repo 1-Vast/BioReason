@@ -248,16 +248,28 @@ def cmd_api_test(args):
 
 
 def cmd_prior(args):
-    from utils.prior import run_prior
+    from tools.prep import main as prep_main
+    # Override sys.argv so parse_args picks up our values
+    import sys as _sys
+    _sys.argv = [
+        "tools/prep.py",
+        "--h5ad", args.h5ad,
+        "--out", args.out,
+        "--pert_key", args.pert_key,
+        "--control_label", args.control_label,
+        "--min_conf", str(args.min_conf),
+        "--evidence_dim", str(args.evidence_dim),
+        "--encoder", args.encoder,
+    ]
+    if args.kb:
+        _sys.argv.extend(["--kb", args.kb])
     if args.use_llm:
-        from utils.llm import has_llm_key
-        if not has_llm_key():
-            print("WARNING: --use_llm set but no API key found. Using local KB only.")
-            args.use_llm = False
-    run_prior(args.h5ad, args.out, pert_key=args.pert_key, control_label=args.control_label,
-              kb_path=args.kb, use_llm=args.use_llm, min_conf=args.min_conf,
-              evidence_dim=args.evidence_dim, encoder=args.encoder,
-              model_name=args.model_name, audit_out=args.audit)
+        _sys.argv.append("--use_llm")
+    if args.model_name:
+        _sys.argv.extend(["--model_name", args.model_name])
+    if args.audit:
+        _sys.argv.extend(["--audit", args.audit])
+    prep_main()
 
 
 def main():

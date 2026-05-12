@@ -12,7 +12,7 @@
 - [Overview](#overview)
 - [Framework](#framework)
 - [Architecture](#architecture)
-- [Three-Stage Training](#three-stage-training)
+- [Stage Design](#stage-design)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [CLI Reference](#cli-reference)
@@ -35,6 +35,54 @@ BioReason predicts single-cell perturbation responses through an intermediate **
 ```
 x_control + perturbation → z_bio → delta → x_perturbed
 ```
+
+Final stage organization:
+- Stage 0: evidence preprocessing only
+- Stage 1: basic perturbation warm-up without evidence
+- Stage 2: evidence-guided training + internal evidence warm-up + latent-only BP + target latent export
+- Stage 3: evidence-free latent alignment + latent-only BP
+
+Stage 0 converts raw h5ad -> local KB / optional LLM fallback -> JSON validation
+-> confidence filtering -> text encoder -> `adata.obsm["evidence"]` -> processed
+h5ad. It does not train, call `BioReason.forward`, or compute evidence gain,
+latent shift, or loss.
+
+The former Stage 1.5 idea is merged into Stage 2 to avoid redundant stages.
+
+Monet mapping:
+- Monet auxiliary image -> BioReason biological evidence
+- Monet observation tokens -> BioReason key biological observations: top DEG genes, pathway response, TF activity, gene module response, evidence vector
+- Monet latent visual embeddings -> BioReason `z_bio` latent biological reasoning state
+- Monet Stage 1 warm-up -> BioReason Stage 1 perturbation warm-up without evidence
+- Monet Stage 2 latent-observation alignment with auxiliary images -> BioReason Stage 2 evidence-guided biological-observation alignment
+- Monet latent-only backpropagation -> BioReason latent-only BP for evidence/alignment losses
+- Monet Stage 3 latent generation without auxiliary images -> BioReason Stage 3 latent generation without evidence
+
+---
+
+## What is borrowed from Monet and what is adapted?
+
+Borrowed from Monet:
+- multi-stage latent distillation
+- evidence-guided target latent construction
+- evidence-free latent generation in Stage 3
+- latent-only BP to prevent shortcut optimization
+- with-vs-without evidence diagnostics
+
+Adapted for biology:
+- auxiliary image -> biological evidence
+- observation token -> key biological observations
+- NTP loss -> expression, delta, DEG, and evidence reconstruction losses
+- controlled attention flow -> structural evidence isolation through EvidenceGate and Reasoner
+- visual latent -> biological reasoning latent `z_bio`
+
+Not implemented now:
+- VLPO / RL
+- full all-layer token alignment
+- visual-style attention mask
+- test-time latent scaling benchmark
+
+Evidence never enters the decoder directly; decoder input remains `cell_emb + z_bio`.
 
 ---
 
@@ -83,7 +131,7 @@ x_control + perturbation → z_bio → delta → x_perturbed
 
 ---
 
-## Three-Stage Training
+## Stage Design
 
 ```
 Stage 1              Stage 2                 Stage 3
@@ -102,11 +150,34 @@ L_expr+L_delta       +L_evidence+L_mmd       +L_latent(cosine)
                      (export target_latent)   (align with teacher)
 ```
 
+Final stage organization:
+- Stage 0: evidence preprocessing only
+- Stage 1: basic perturbation warm-up without evidence
+- Stage 2: evidence-guided training + internal evidence warm-up + latent-only BP + target latent export
+- Stage 3: evidence-free latent alignment + latent-only BP, default init from Stage 1 checkpoint
+
+Stage 0 converts raw h5ad -> local KB / optional LLM fallback -> JSON validation
+-> confidence filtering -> text encoder -> `adata.obsm["evidence"]` -> processed
+h5ad. It does not train, call `BioReason.forward`, or compute evidence gain,
+latent shift, or loss.
+
+The former Stage 1.5 idea is merged into Stage 2 to avoid redundant stages.
+
+Monet mapping:
+- Monet auxiliary image -> BioReason biological evidence
+- Monet observation tokens -> BioReason key biological observations: top DEG genes, pathway response, TF activity, gene module response, evidence vector
+- Monet latent visual embeddings -> BioReason `z_bio` latent biological reasoning state
+- Monet Stage 1 warm-up -> BioReason Stage 1 perturbation warm-up without evidence
+- Monet Stage 2 latent-observation alignment with auxiliary images -> BioReason Stage 2 evidence-guided biological-observation alignment
+- Monet Stage 3 latent generation without auxiliary images -> BioReason Stage 3 latent generation without evidence
+
 ---
 
-## Stage 0: Evidence Prior Construction
+## Stage 0: Evidence preprocessing
 
-Before training, biological evidence priors can be constructed from a **local knowledge base (KB)** with an optional **LLM fallback**.
+Before training, biological evidence priors are constructed offline from raw h5ad
+through local KB / optional LLM fallback, JSON validation, confidence filtering,
+and a text encoder, then written to `adata.obsm["evidence"]` in a processed h5ad.
 
 ### Design Principles
 
@@ -118,6 +189,20 @@ Before training, biological evidence priors can be constructed from a **local kn
 ### Usage
 
 ```bash
+python tools/prep.py \
+  --h5ad dataset/perturb.h5ad \
+  --out dataset/perturb_evi.h5ad \
+  --kb dataset/kb/prior.json \
+  --evidence_dim 128 \
+  --encoder hash
+
+python tools/prep.py \
+  --h5ad dataset/perturb.h5ad \
+  --out dataset/perturb_evi.h5ad \
+  --kb dataset/kb/prior.json \
+  --use_llm \
+  --min_conf 0.5
+
 # Local KB only (recommended)
 python main.py prior --h5ad dataset/perturb.h5ad --out dataset/perturb_with_evidence.h5ad --kb dataset/kb/prior.json
 
@@ -129,6 +214,10 @@ python main.py prior --h5ad dataset/perturb.h5ad --out output/with_evidence.h5ad
   --kb dataset/kb/prior.json --min_conf 0.6 --evidence_dim 256 --encoder hash \
   --audit output/prior_audit.csv
 ```
+
+Defaults: `--use_llm` is off, `--encoder hash`, `--evidence_dim 128`,
+`--min_conf 0.5`. LLM fallback is used only for offline evidence construction,
+never inside `model.forward` or the train loop. Low-confidence priors are zeroed.
 
 ### KB Format
 
@@ -154,6 +243,38 @@ The pipeline writes into the output `.h5ad`:
 - `adata.obs["evidence_conf"]` — confidence scores per cell
 - `adata.obs["evidence_source"]` — "local", "llm", "control", or "miss"
 - `adata.uns["evidence_audit"]` — per-perturbation audit records
+
+---
+
+## Stage 2: Evidence-guided training with internal evidence warm-up and latent-only BP
+
+Stage 2 includes the evidence utilization warm-up in its first
+`train.evi_warm_epochs` epochs; there is no separate Stage 1.5.
+
+During warm-up, each batch compares two branches:
+- with evidence: `x, pert, evidence -> z_ev -> pred_ev`
+- without evidence: `x, pert, evidence=None -> z_no -> pred_no`
+
+The evidence branch is encouraged to improve DEG/key biological observation
+prediction over the no-evidence branch, and `z_bio` is required to reconstruct
+the evidence vector. Evidence/alignment losses use latent-only backpropagation:
+`cell_encoder` and `decoder` are frozen so evidence information must be carried
+by `z_bio` through the reasoner, evidence modules, perturbation encoder, and
+covariate encoder. After warm-up, Stage 2 continues normal evidence-guided
+training and exports the evidence-guided `target_latent`.
+
+---
+
+## Stage 3: Evidence-free latent alignment with latent-only BP
+
+Stage 3 removes evidence and aligns `x, pert, evidence=None -> z_student` to the
+Stage 2 `target_latent`. The latent alignment loss uses latent-only BP: decoder
+and cell encoder are frozen for the alignment update, while the latent
+generation path remains trainable. This prevents decoder/cell-encoder shortcuts
+from satisfying the alignment objective without learning evidence-free latent
+generation. By default Stage 3 initializes from `output/stage1/model.pt`, matching
+Monet's warm-up initialization principle; `stage3_init: "stage2"` is supported
+only as an ablation setting.
 
 ---
 
