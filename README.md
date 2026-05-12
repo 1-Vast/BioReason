@@ -10,191 +10,101 @@
 ## Table of Contents
 
 - [Overview](#overview)
-- [Motivation](#motivation)
-- [Model Framework](#model-framework)
+- [Framework](#framework)
 - [Architecture](#architecture)
 - [Three-Stage Training](#three-stage-training)
 - [Installation](#installation)
-- [Data Format](#data-format)
 - [Quick Start](#quick-start)
-- [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
+- [Configuration](#configuration)
 - [API Reference](#api-reference)
-- [Evaluation Metrics](#evaluation-metrics)
-- [Project Structure](#project-structure)
-- [Environment Variables](#environment-variables)
-- [Output Files](#output-files)
-- [Tests](#tests)
-- [License](#license)
-- [Citation](#citation)
+- [Design Notes](#design-notes)
 - [File Index](#file-index)
+- [License](#license)
 
 ---
 
 ## Overview
 
-**BioReason** predicts single-cell perturbation responses without relying on biological evidence at inference time. Instead of a direct `x → y` mapping, it introduces an intermediate **latent biological reasoning state** (`z_bio`) that captures the mechanism of perturbation response — pathway shifts, TF activity changes, gene module responses, GRN propagation, cell-state transitions.
+BioReason predicts single-cell perturbation responses through an intermediate **latent biological reasoning state** (`z_bio`). It adapts evidence-guided latent distillation to perturbation biology:
+
+- **Training**: optional biological evidence (DEG, pathway, TF scores) shapes `z_bio`
+- **Inference**: no evidence required — model reasons autonomously
+- **Counterfactual**: predict unseen perturbations by overriding the perturbation condition
 
 ```
-control expression + perturbation
-        ↓
-latent biological reasoning (z_bio)
-        ↓
-perturbed expression prediction
+x_control + perturbation → z_bio → delta → x_perturbed
 ```
-
-**Key innovation**: During training, optional biological evidence (DEG, pathway scores, TF activity, gene module scores) can supervise and shape the latent reasoning states. During inference, evidence is **not required** — the model generates `z_bio` autonomously.
 
 ---
 
-## Motivation
-
-Existing perturbation prediction models face two limitations:
-
-1. **Direct mapping** (`x, pert → y`) lacks interpretable intermediate states.
-2. **Evidence-dependent models** require auxiliary data (DEG, pathway) at inference time, limiting practical deployment.
-
-BioReason addresses both:
-
-- **Interpretable bottleneck**: `z_bio` represents the biological mechanism of perturbation.
-- **Evidence-free inference**: Evidence only used during training for distillation; inference uses only `x + pert`.
-
----
-
-## Model Framework
-
-### Forward Pass
+## Framework
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          BioReason                              │
-│                                                                 │
-│  x [B,G] ──► CellEncoder ──► cell_emb [B,D] ──┐                │
-│                                                 │               │
-│  pert ─────► PertEncoder ──► pert_emb [B,D] ──►├──► context ──► │
-│                                                 │               │
-│  cov ──────► CovEncoder ───► cov_emb  [B,D] ──┘               │
-│                                                                 │
-│                       ┌──────────────────┐                      │
-│  evidence [B,E] ──►──►   EvidenceGate    │  (train only)        │
-│                       └────────┬─────────┘                      │
-│                                │                                │
-│                       ┌────────▼─────────┐                      │
-│                       │     Reasoner     │  × N steps           │
-│                       │  ReasonStep × N  │                      │
-│                       └────────┬─────────┘                      │
-│                                │                                │
-│                                ▼  z_bio [B,D]                   │
-│                       ┌──────────────────┐                      │
-│  cell_emb ───────────►│   ExprDecoder    │                      │
-│                       └────────┬─────────┘                      │
-│                                │                                │
-│                                ▼  delta [B,G]                   │
-│                       ┌──────────────────┐                      │
-│  x ──────────────────►│  pred = x + delta│                      │
-│                       └──────────────────┘                      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Training vs Inference
-
-```
-          TRAINING                          INFERENCE
-          ────────                          ─────────
-   x + pert + evidence              x + pert (no evidence)
-         │                                   │
-         ▼                                   ▼
-     Reasoner                             Reasoner
-         │                                   │
-         ▼                                   ▼
-   ExprDecoder                          ExprDecoder
-         │                                   │
-    pred + L_evidence                       pred
+                         ┌─────────────────────┐
+  control  ─────────────►│    CellEncoder      │──┐
+  expression             └─────────────────────┘  │
+                                                  │  cell_emb
+  perturbation ────────►│    PertEncoder      │──┤
+  (gene / drug / combo)  └─────────────────────┘  │
+                                                  ├──► context ──┐
+  covariates  ──────────►│    CovEncoder       │──┘              │
+  (cell_type/dose/time)  └─────────────────────┘                 │
+                                                                 ▼
+                                          ┌──────────────────────────┐
+  evidence  ──────► EvidenceGate ────────►│       Reasoner           │
+  (DEG/pathway)     (train only)          │  ReasonStep × N         │
+                                          └──────────┬───────────────┘
+                                                     │
+                                                     ▼  z_bio
+                                          ┌──────────────────────────┐
+                     cell_emb ───────────►│     ExprDecoder          │
+                                          └──────────┬───────────────┘
+                                                     │
+                                                     ▼  delta_x
+                                          ┌──────────────────────────┐
+                     x_control ──────────►│     pred = x + delta     │
+                                          └──────────────────────────┘
 ```
 
 ---
 
 ## Architecture
 
-### Core Modules
-
 | Module | Input | Output | Description |
 |--------|-------|--------|-------------|
-| `CellEncoder` | `x [B,G]` | `cell_emb [B,D]` | MLP encoder with LayerNorm, maps gene expression to cell embedding |
-| `PertEncoder` | `pert [B]` or `[B,N]` or `[B,F]` | `pert_emb [B,D]` | Supports categorical id, multi-hot gene vector, continuous descriptor. Aggregation: mean / sum / attention |
-| `CovEncoder` | `cov` dict | `cov_emb [B,D]` | Embeds cell_type, dose, time, batch metadata |
-| `Reasoner` | `cell_emb + pert_emb + cov_emb` | `z_bio [B,D]` | Multi-step reasoning engine. Shared-context FiLM + self-attention at each step |
-| `ReasonStep` | `z [B,D], context [B,D]` | `z' [B,D]` | Single reasoning step: FiLM modulation → Transformer/MLP/GRU update |
-| `EvidenceGate` | `z [B,D], evidence [B,D]` | `z' [B,D]` | FiLM/additive/cross-attention gate. Idempotent when `evidence=None` |
-| `ExprDecoder` | `cell_emb [B,D] + z_bio [B,D]` | `delta [B,G]` | 3-layer MLP, predicts expression difference |
-| `BioLoss` | `out, batch, stage` | `loss dict` | expr + delta + DEG-weighted + latent-alignment + evidence + MMD |
-
-### BioReason Constructor
-
-```python
-BioReason(
-    input_dim=2000,     # number of genes
-    dim=256,            # latent dimension
-    hidden=512,         # MLP hidden dim
-    steps=8,            # reasoning steps
-    heads=4,            # attention heads
-    dropout=0.1,
-    residual=True,      # pred = x + delta
-    pert_mode="id",     # "id" | "multihot" | "continuous"
-    pert_agg="mean",    # "mean" | "sum" | "attention"
-    num_perts=10000,
-)
-```
-
-### BioReason.forward()
-
-```python
-def forward(self, x, pert, cov=None, evidence=None, target_latent=None,
-            return_latent=True, detach_latent=False) -> dict:
-    """
-    Returns: {"pred": [B,G], "delta": [B,G], "latent": [B,D], "evidence_pred": [B,D] or None}
-    """
-```
+| `CellEncoder` | `x [B,G]` | `[B,D]` | Gene expression → cell embedding |
+| `PertEncoder` | pert id/multihot/continuous | `[B,D]` | Perturbation → embedding |
+| `CovEncoder` | cov dict | `[B,D]` | Metadata → embedding |
+| `Reasoner` | cell+pert+cov | `z_bio [B,D]` | Multi-step latent reasoning |
+| `EvidenceGate` | z + evidence | `z' [B,D]` | Evidence injection (idempotent if None) |
+| `ExprDecoder` | cell_emb + z_bio | `delta [B,G]` | Latent → expression change |
+| `BioLoss` | out + batch + stage | loss dict | Stage-gated 5-loss composite |
 
 ---
 
 ## Three-Stage Training
 
-### Stage 1 — Warm-up
-
-Simple perturbation prediction. No evidence. Model learns basic expression patterns.
-
 ```
-Loss = L_expr + L_delta + L_deg
-```
+Stage 1              Stage 2                 Stage 3
+warm-up              evidence-guided         evidence-free
+                     latent distillation     latent alignment
 
-### Stage 2 — Evidence-Guided Latent Distillation
-
-Biological evidence (DEG, pathway scores, TF activity) is injected via `EvidenceGate`. Model learns to represent biological mechanisms in `z_bio`. Teacher latent states are saved for Stage 3.
-
-```
-Loss = L_expr + L_delta + L_deg + L_evidence + L_mmd
-```
-
-### Stage 3 — Evidence-Free Alignment
-
-Evidence removed. Student latent states are aligned with teacher latents from Stage 2. Model learns autonomous reasoning.
-
-```
-Loss = L_expr + L_delta + L_deg + L_latent_align + L_mmd
+x + pert             x + pert + evidence     x + pert (no evidence)
+   │                    │                       │
+   ▼                    ▼                       ▼
+Reasoner             Reasoner                Reasoner
+   │                    │                       │
+   ▼                    ▼                       ▼
+ExprDecoder          ExprDecoder            ExprDecoder
+   │                    │                       │
+L_expr+L_delta       +L_evidence+L_mmd       +L_latent(cosine)
+                     (export target_latent)   (align with teacher)
 ```
 
 ---
 
 ## Installation
-
-### Prerequisites
-
-- Python 3.10+
-- PyTorch 1.13+
-- CUDA (optional, for GPU training)
-
-### Setup
 
 ```bash
 git clone git@github.com:1-Vast/BioReason.git
@@ -202,94 +112,52 @@ cd BioReason
 pip install -r requirements.txt
 ```
 
-### Dependencies
-
-```
-torch>=1.13
-numpy
-pandas
-scipy
-scikit-learn
-anndata
-scanpy
-pyyaml
-python-dotenv
-tqdm
-```
-
----
-
-## Data Format
-
-### h5ad (AnnData)
-
-| Component | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `adata.X` | `[N, G]` sparse/dense | Yes | Expression matrix |
-| `adata.obs["perturbation"]` | str | Yes | Perturbation label (e.g., "TP53_KO", "control") |
-| `adata.obs["cell_type"]` | str | No | Cell type annotation |
-| `adata.obs["dose"]` | float/str | No | Perturbation dose |
-| `adata.obs["time"]` | float/str | No | Time point |
-| `adata.obs["batch"]` | str | No | Batch ID |
-| `adata.obsm["evidence"]` | `[N, E]` | No | Precomputed evidence matrix |
-
-### Control Label
-
-Default: `"control"`. Configurable via `config/default.yaml` → `data.control_label`.
-
-### PertDataset Output
-
-```python
-{
-    "x":        torch.Tensor [G],    # expression
-    "y":        torch.Tensor [G],    # target expression
-    "pert":     int,                 # perturbation id
-    "pert_str": str,                 # perturbation label
-    "cov":      dict[str, Tensor],   # covariate values
-    "evidence": Tensor [E] or None,  # biological evidence
-    "meta":     dict,                # index, is_control
-}
-```
+Dependencies: `torch`, `numpy`, `scipy`, `anndata`, `scanpy`, `pyyaml`, `python-dotenv`, `tqdm`, `openai` (optional).
 
 ---
 
 ## Quick Start
 
-### 1. Prepare Data
+### 1. Data
 
-Place your h5ad file in `dataset/`:
+Place h5ad file in `dataset/`:
 
 ```
 dataset/perturb.h5ad
 ```
 
-### 2. Configure
+Required: `adata.X`, `adata.obs["perturbation"]`. Optional: `adata.obsm["evidence"]`.
 
-Edit `config/default.yaml` to match your data columns, or create a custom config.
-
-### 3. Train
+### 2. Train
 
 ```bash
 # Stage 1: warm-up
 python main.py train --config config/default.yaml --h5ad dataset/perturb.h5ad --stage 1 --device cuda
 
-# Stage 2: evidence-guided
+# Stage 2: evidence-guided (saves target_latent.pt automatically)
 python main.py train --config config/default.yaml --h5ad dataset/perturb.h5ad --stage 2 --device cuda
 
 # Stage 3: evidence-free alignment
 python main.py train --config config/default.yaml --h5ad dataset/perturb.h5ad --stage 3 --target_latent output/stage2/target_latent.pt --device cuda
 ```
 
-### 4. Infer
+### 3. Counterfactual Inference
 
 ```bash
-python main.py infer --config config/default.yaml --checkpoint output/stage3/model.pt --h5ad dataset/perturb.h5ad --pert TP53_KO --out output/infer
+python main.py infer --checkpoint output/stage3/model.pt --h5ad dataset/perturb.h5ad --pert TP53_KO --out output/infer
 ```
+All cells are predicted as if `TP53_KO` was applied. No evidence required.
 
-### 5. Evaluate
+### 4. Evaluate
 
 ```bash
 python main.py eval --pred output/infer/pred.npz --truth dataset/perturb.h5ad --out output/eval
+```
+
+### 5. API Test
+
+```bash
+python main.py api-test
 ```
 
 ### 6. Verify
@@ -300,377 +168,112 @@ python tests/check.py
 
 ---
 
-## Configuration
-
-All config in `config/`. Files are merged in order, later values override earlier.
-
-### config/default.yaml
-
-```yaml
-project:
-  name: "BioReason"
-  task: "single-cell perturbation prediction"
-
-data:
-  h5ad: ""
-  label_key: "perturbation"
-  control_label: "control"
-  cell_type_key: "cell_type"
-  dose_key: "dose"
-  time_key: "time"
-  batch_key: "batch"
-  use_hvg: true
-  n_hvg: 2000
-
-eval:
-  top_deg: 50
-```
-
-### config/model.yaml
-
-```yaml
-model:
-  input_dim: 2000
-  dim: 256
-  hidden: 512
-  latent_steps: 8
-  heads: 4
-  dropout: 0.1
-  residual: true
-  pert_mode: "id"
-  pert_agg: "mean"
-```
-
-### config/train.yaml
-
-```yaml
-train:
-  stage: 1
-  epochs: 100
-  batch_size: 128
-  lr: 0.0005
-  weight_decay: 0.0001
-  amp: true
-  grad_clip: 1.0
-  device: "cuda"
-  seed: 42
-  save_dir: "output"
-```
-
-### config/loss.yaml
-
-```yaml
-loss:
-  expr: 1.0
-  delta: 1.0
-  deg: 2.0
-  latent: 1.0
-  evidence: 1.0
-  mmd: 0.1
-```
-
----
-
 ## CLI Reference
 
 ### `python main.py train`
 
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `--config` | str | `config/default.yaml` | Config path |
-| `--h5ad` | str | (required) | Data file |
-| `--stage` | int | `1` | 1, 2, or 3 |
-| `--device` | str | `cuda` | `cuda` or `cpu` |
-| `--save_dir` | str | (from config) | Output directory |
-| `--target_latent` | str | `None` | Teacher latent path (stage 3) |
+| Argument | Description |
+|----------|-------------|
+| `--config` | Config YAML path (default: config/default.yaml) |
+| `--h5ad` | Data file (required) |
+| `--stage` | 1, 2, or 3 |
+| `--device` | cuda or cpu |
+| `--save_dir` | Override output directory |
+| `--target_latent` | Teacher latent path (stage 3) |
 
 ### `python main.py infer`
 
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `--config` | str | `config/default.yaml` | Config path |
-| `--checkpoint` | str | (required) | Model `.pt` file |
-| `--h5ad` | str | (required) | Data file |
-| `--pert` | str | `None` | Perturbation label |
-| `--out` | str | `output/infer` | Output directory |
-| `--device` | str | `cuda` | `cuda` or `cpu` |
-| `--batch_size` | int | `128` | Batch size |
+| Argument | Description |
+|----------|-------------|
+| `--checkpoint` | Model .pt file (required) |
+| `--h5ad` | Data file (required) |
+| `--pert` | Target perturbation, e.g., TP53_KO (required) |
+| `--out` | Output directory |
+| `--device` | cuda or cpu |
+| `--batch_size` | Batch size |
 
 ### `python main.py eval`
 
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `--config` | str | `config/default.yaml` | Config path |
-| `--pred` | str | (required) | Predictions `.npz` file |
-| `--truth` | str | (required) | Ground truth `.h5ad` file |
-| `--out` | str | `output/eval` | Output directory |
-| `--top_deg` | int | `50` | Top N DEGs |
+| Argument | Description |
+|----------|-------------|
+| `--pred` | Predictions .npz (required) |
+| `--truth` | Ground truth .h5ad (required) |
+| `--out` | Output directory |
+| `--top_deg` | Top N DEGs (default 50) |
 
-### `python tests/check.py`
+### `python main.py api-test`
 
-Runs import + forward + loss verification. No arguments.
-
----
-
-## API Reference
-
-### Python Usage
-
-```python
-from models import BioReason, BioLoss
-from models.data import build_dataset
-from models.train import train_model
-
-# Build model
-model = BioReason(input_dim=2000, dim=256, num_perts=100)
-
-# Forward
-out = model(x, pert, evidence=None)
-# out["pred"] [B,G], out["delta"] [B,G], out["latent"] [B,D]
-
-# Inference without evidence
-z = model.encode(x, pert)
-pred = model.predict(x, z)
-
-# Loss
-loss_fn = BioLoss()
-losses = loss_fn(out, batch, stage=1)
-# losses["loss"], losses["expr"], losses["delta"], losses["deg"], ...
-```
-
-### Key Classes
-
-| Class | Module | Description |
-|-------|--------|-------------|
-| `BioReason` | `models.reason` | Full model: encode → reason → decode |
-| `Reasoner` | `models.reason` | Multi-step latent reasoning engine |
-| `ReasonStep` | `models.reason` | Single reasoning step (FiLM + attn) |
-| `EvidenceGate` | `models.reason` | Evidence injection (idempotent if None) |
-| `BioLoss` | `models.loss` | 6-loss composite with stage gating |
-| `CellEncoder` | `models.cell` | Expression → embedding |
-| `PertEncoder` | `models.pert` | Perturbation → embedding |
-| `ExprDecoder` | `models.decoder` | Embedding pair → delta |
-| `PertDataset` | `models.data` | h5ad → PyTorch Dataset |
-| `MLP` | `models.base` | Configurable MLP block |
+Tests LLM API connectivity. No data sent.
 
 ---
 
-## Evaluation Metrics
+## Design Notes
 
-| Metric | Description |
-|--------|-------------|
-| `mse` | Mean squared error (cell × gene) |
-| `mae` | Mean absolute error |
-| `pearson` | Per-gene Pearson correlation, averaged |
-| `spearman` | Per-gene Spearman correlation, averaged |
-| `r2` | Per-gene R² score, averaged |
-| `deg_pearson` | Pearson on top-K DEGs only |
-| `top_deg_overlap` | Jaccard of top-K DEG sets |
-| `mmd` | Maximum Mean Discrepancy (latent distribution) |
+### Important Design Choices
 
-Output: `output/eval/metrics.json` + `metrics.csv`.
+1. **LLM is optional and restricted**. LLM is only used for offline biological prior construction and API connectivity tests. It is **never** called inside `model.forward()` or the training loop.
 
----
+2. **No multimodal/visual dependencies**. BioReason is a single-cell perturbation model. Input is gene expression + perturbation condition. No image, MLLM, Qwen, or visual reasoning code.
 
-## Project Structure
+3. **Evidence is optional at inference**. The model learns to reason without evidence during Stage 3 alignment.
 
-```
-BioReason/
-│
-├── main.py                 # CLI entry (train / infer / eval)
-├── README.md               # ← this file
-├── requirements.txt        # Python dependencies
-├── .env.example            # API key template
-├── .gitignore              # Excludes .env, data, outputs, binaries
-├── LICENSE                 # MIT
-│
-├── models/                 # Core model logic (NO CLI code)
-│   ├── __init__.py         # Public API exports
-│   ├── reason.py           # ★ BioReason, Reasoner, EvidenceGate, ReasonStep
-│   ├── base.py             # MLP, ResidualBlock, LayerNormBlock, EmbeddingBlock
-│   ├── cell.py             # CellEncoder, CovEncoder
-│   ├── pert.py             # PertEncoder (id / multihot / continuous)
-│   ├── latent.py           # LatentBlock, FiLM, CrossBlock
-│   ├── decoder.py          # ExprDecoder
-│   ├── loss.py             # BioLoss (6 losses, stage-gated)
-│   ├── data.py             # PertDataset, build_dataset, build_loader, split_data
-│   ├── train.py            # train_model, train_epoch, save_ckpt, load_ckpt
-│   ├── infer.py            # load_model, predict, save_pred
-│   └── eval.py             # evaluate, save_metrics, all metric functions
-│
-├── utils/                  # Shared utilities
-│   ├── __init__.py
-│   └── config.py           # YAML loading, .env loading, config merging
-│
-├── config/                 # YAML configuration files
-│   ├── default.yaml        # Project, data, eval settings
-│   ├── model.yaml          # Model hyperparameters
-│   ├── train.yaml          # Training hyperparameters
-│   └── loss.yaml           # Loss weights
-│
-├── scripts/                # Convenience batch launchers
-│   ├── run_train.bat       # Stage 1 training
-│   ├── run_infer.bat       # Inference
-│   └── run_eval.bat        # Evaluation
-│
-├── tests/
-│   └── check.py            # Import + forward + loss verification
-│
-├── dataset/                # Data files (git-ignored except README)
-│   ├── README.md           # Data format documentation
-│   └── .gitkeep
-│
-└── output/                 # Results (git-ignored except README)
-    ├── README.md           # Output structure documentation
-    └── .gitkeep
-```
+4. **Evidence can include**: pathway scores, TF activity vectors, DEG score vectors, gene module scores — any precomputed biological signal.
 
----
+5. **Counterfactual inference**: `--pert TP53_KO` overrides perturbation labels across all cells, enabling prediction of unseen perturbations from control cells.
 
-## Environment Variables
+6. **Dataset target construction**: default is `group_mean` (y = group mean expression). Other modes: `control_to_pert` (x from control, y from perturbed group), `identity` (debug only).
 
-Copy `.env.example` to `.env`:
-
-```bash
-cp .env.example .env
-```
-
-Variables:
-
-| Key | Description |
-|-----|-------------|
-| `OPENAI_API_KEY` | API key for LLM features |
-| `OPENAI_BASE_URL` | API endpoint |
-| `OPENAI_MODEL` | Model name |
-| `LLM_PROVIDER` | Provider identifier |
-| `LLM_BASE_URL` | Alternative LLM endpoint |
-| `LLM_API_KEY` | Alternative API key |
-| `LLM_MODEL` | Alternative model name |
-
-> **IMPORTANT**: Never commit `.env` to version control. It is listed in `.gitignore`.
-
----
-
-## Output Files
-
-| File | Stage | Description |
-|------|-------|-------------|
-| `output/stage1/model.pt` | Train | Stage 1 checkpoint |
-| `output/stage2/model.pt` | Train | Stage 2 checkpoint |
-| `output/stage2/target_latent.pt` | Train | Teacher latent for Stage 3 |
-| `output/stage3/model.pt` | Train | Stage 3 checkpoint |
-| `output/infer/pred.npz` | Infer | Predicted expressions |
-| `output/infer/pred.h5ad` | Infer | Predictions as AnnData |
-| `output/eval/metrics.json` | Eval | Evaluation metrics (JSON) |
-| `output/eval/metrics.csv` | Eval | Evaluation metrics (CSV) |
-
----
-
-## Tests
-
-```bash
-python tests/check.py
-```
-
-Verifies:
-
-1. **Import** — all classes import correctly
-2. **Forward** — BioReason runs with toy data:
-   - No evidence (inference mode)
-   - With evidence (training mode)
-   - `detach_latent=True`
-   - `encode()` + `predict()`
-3. **Loss** — BioLoss returns correct dict for stages 1, 2, 3 and minimal batch
+7. **API keys**: read from `.env` via `python-dotenv`. Never hardcoded. `.env` is git-ignored.
 
 ---
 
 ## File Index
 
-Every file in this repository, with its purpose and key contents.
-
-### `./` root
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `main.py` | ~170 | CLI entry point. Parses args, loads config, calls `models.train` / `models.infer` / `models.eval`. No model logic. |
-| `README.md` | ~650 | This documentation. Framework diagrams, API reference, CLI reference, file index. |
-| `requirements.txt` | 10 | Core Python dependencies: torch, numpy, scipy, anndata, scanpy, pyyaml, python-dotenv, tqdm |
-| `.env.example` | 8 | Template for API keys. Copy to `.env` and fill in values. Never commit `.env`. |
-| `.gitignore` | 35 | Excludes `.env`, `dataset/*`, `output/*`, `archive_old`, `*.pt`, `*.h5ad`, `*.npz`, pycache, IDE files |
-| `LICENSE` | 21 | MIT License |
-
-### `models/` — Core model logic
-
-| File | Lines | Key Classes / Functions | Purpose |
-|------|-------|------------------------|---------|
-| `__init__.py` | 20 | — | Package exports: BioReason, Reasoner, EvidenceGate, ReasonStep, BioLoss, CellEncoder, PertEncoder, ExprDecoder, MLP |
-| `reason.py` ★ | 195 | `BioReason`, `Reasoner`, `ReasonStep`, `EvidenceGate` | **Core innovation file.** Full model, multi-step reasoning engine, evidence gate, single reasoning step |
-| `base.py` | 70 | `MLP`, `ResidualBlock`, `LayerNormBlock`, `EmbeddingBlock` | Reusable NN building blocks used by all other modules |
-| `cell.py` | 60 | `CellEncoder`, `CovEncoder` | Gene expression → cell embedding; metadata → covariate embedding |
-| `pert.py` | 75 | `PertEncoder` | Perturbation → embedding. Supports `id` / `multihot` / `continuous` modes; `mean` / `sum` / `attention` aggregation |
-| `latent.py` | 80 | `LatentBlock`, `FiLM`, `CrossBlock` | Latent reasoning primitives: self-attention/MLP/GRU update, feature-wise modulation, cross-attention |
-| `decoder.py` | 25 | `ExprDecoder` | cell_emb + z_bio → delta expression (3-layer MLP) |
-| `loss.py` | 115 | `BioLoss`, `mmd_loss`, `top_deg_mask` | 6-loss composite: expr, delta, DEG-weighted, latent-alignment, evidence, MMD. Stage-gated. |
-| `data.py` | 110 | `PertDataset`, `read_h5ad`, `build_dataset`, `build_loader`, `split_data` | h5ad → PyTorch Dataset. HVG selection. Covariate vocabulary. Evidence loading. |
-| `train.py` | 145 | `train_model`, `train_epoch`, `validate`, `save_ckpt`, `load_ckpt`, `save_target_latent` | Full training loop. AMP, grad clip, checkpointing. Target latent export for Stage 3. |
-| `infer.py` | 65 | `load_model`, `predict`, `save_pred` | Checkpoint loading, batch inference (no evidence), npz/h5ad save |
-| `eval.py` | 100 | `evaluate`, `save_metrics`, `mse`, `mae`, `pearson`, `spearman`, `r2`, `deg_pearson`, `top_deg_overlap` | 8 metrics. JSON + CSV export. |
-
-### `utils/` — Shared utilities
-
-| File | Lines | Key Functions | Purpose |
-|------|-------|---------------|---------|
-| `__init__.py` | 2 | — | Re-exports from config |
-| `config.py` | 30 | `load_env`, `load_yaml`, `merge`, `load` | `.env` loading, YAML parsing, multi-file config merging |
-
-### `config/` — YAML configuration
+### `models/` — Core
 
 | File | Purpose |
 |------|---------|
-| `default.yaml` | Project metadata, data paths/keys, eval settings |
-| `model.yaml` | Architecture: input_dim, dim, hidden, latent_steps, heads, dropout, pert_mode, pert_agg |
-| `train.yaml` | Hyperparameters: stage, epochs, batch_size, lr, weight_decay, amp, grad_clip, device, seed |
-| `loss.yaml` | Loss weights: expr, delta, deg, latent, evidence, mmd |
+| `reason.py` ★ | `BioReason`, `Reasoner`, `EvidenceGate`, `ReasonStep` |
+| `data.py` | `PertDataset` with real target construction, counterfactual, collate |
+| `loss.py` | `BioLoss` — stage-gated, cosine alignment, per-gene DEG weighting |
+| `train.py` | Train loop, stage logic, target latent export/attach |
+| `infer.py` | Counterfactual prediction, model loading |
+| `eval.py` | 8 evaluation metrics |
+| `base.py` | `MLP`, `ResidualBlock` |
+| `cell.py` | `CellEncoder`, `CovEncoder` |
+| `pert.py` | `PertEncoder` (id/multihot/continuous) |
+| `latent.py` | `LatentBlock`, `FiLM`, `CrossBlock` |
+| `decoder.py` | `ExprDecoder` |
 
-### `scripts/` — Batch launchers
-
-| File | Purpose |
-|------|---------|
-| `run_train.bat` | `python main.py train --stage 1 --device cuda` |
-| `run_infer.bat` | `python main.py infer --checkpoint ... --pert TP53_KO` |
-| `run_eval.bat` | `python main.py eval --pred ... --truth ...` |
-
-### `tests/` — Verification
-
-| File | Purpose |
-|------|---------|
-| `check.py` | Import verification + toy forward pass (no evidence / with evidence / detach / encode+predict) + loss computation (stages 1-3, minimal batch) |
-
-### `dataset/` + `output/` — Data & results (git-ignored)
+### `utils/`
 
 | File | Purpose |
 |------|---------|
-| `dataset/README.md` | h5ad format documentation |
-| `dataset/.gitkeep` | Ensures directory exists in git |
-| `output/README.md` | Output directory structure |
-| `output/.gitkeep` | Ensures directory exists in git |
+| `config.py` | YAML loading, .env |
+| `llm.py` | Offline LLM config test, prior builder |
+
+### `config/`
+
+| File | Purpose |
+|------|---------|
+| `default.yaml` | Project + data settings |
+| `model.yaml` | Architecture hyperparameters |
+| `train.yaml` | Training hyperparameters |
+| `loss.yaml` | Loss weights + metrics |
+
+### `tests/`
+
+| File | Purpose |
+|------|---------|
+| `check.py` | Run all tests |
+| `test_forward.py` | Forward pass with evidence_dim |
+| `test_loss.py` | Stage-gated loss computation |
+| `test_data.py` | Dataset target construction |
+| `test_infer.py` | Counterfactual inference |
+| `test_llm_config.py` | API config (no real key) |
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-
----
-
-## Citation
-
-If you use BioReason in your research, please cite:
-
-```bibtex
-@software{biorreason2026,
-  title     = {BioReason: Evidence-guided latent biological reasoning for single-cell perturbation prediction},
-  year      = {2026},
-  url       = {https://github.com/1-Vast/BioReason}
-}
-```
+MIT

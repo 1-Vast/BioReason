@@ -9,5 +9,6 @@ model:
   heads: 4
   dropout: 0.1
   residual: true
-  pert_mode: "id"       # "id", "multihot", "continuous"
-  pert_agg: "mean"      # "mean", "sum", "attention"
+  pert_mode: "id"
+  pert_agg: "mean"
+  evidence_dim: null

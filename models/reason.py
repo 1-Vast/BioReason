@@ -15,7 +15,7 @@ Classes:
   ReasonStep   - single-step latent biological reasoning block
   EvidenceGate - injects biological evidence into latent (train only)
   Reasoner     - multi-step latent biological reasoning engine
-  BioReason    - full model (CellEncoder + PertEncoder + Reasoner + ExprDecoder)
+  BioReason    - full model
 """
 
 import torch
@@ -30,10 +30,9 @@ from .latent import FiLM, LatentBlock
 
 
 class ReasonStep(nn.Module):
-    """Single-step latent biological reasoning block.
+    """Single-step latent biological reasoning.
 
-    Updates latent state using self-attention or MLP, conditioned on
-    the context embedding (cell + perturbation + covariates fused).
+    FiLM modulation by context, then self-attention / MLP update.
     """
 
     def __init__(self, dim, hidden=None, heads=4, dropout=0.1, mode="transformer"):
@@ -43,17 +42,14 @@ class ReasonStep(nn.Module):
         self.film = FiLM(dim, dim)
 
     def forward(self, z, context):
-        """z: [B, dim], context: [B, dim] -> [B, dim]"""
-        z = self.film(z, context)
-        z = self.latent_block(z)
-        return z
+        return self.latent_block(self.film(z, context))
 
 
 class EvidenceGate(nn.Module):
-    """Gate that injects biological evidence into the latent state.
+    """Injects biological evidence into latent state.
 
-    Training: evidence is provided (DEG, pathway, TF scores).
-    Inference: evidence=None -> gate returns identity (no evidence leak).
+    Training: evidence provided (DEG, pathway, TF scores).
+    Inference: evidence=None → identity (no evidence leak).
     """
 
     def __init__(self, dim, dropout=0.1, mode="film"):
@@ -61,9 +57,7 @@ class EvidenceGate(nn.Module):
         self.mode = mode
         if mode == "film":
             self.gate = nn.Sequential(
-                nn.Linear(dim, dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
+                nn.Linear(dim, dim), nn.GELU(), nn.Dropout(dropout),
                 nn.Linear(dim, dim * 2),
             )
         elif mode == "add":
@@ -73,33 +67,26 @@ class EvidenceGate(nn.Module):
             self.norm = nn.LayerNorm(dim)
 
     def forward(self, z, evidence=None):
-        """z: [B, dim], evidence: [B, dim] or None -> [B, dim]"""
         if evidence is None:
-            return z  # inference mode: no evidence
-
+            return z
         if self.mode == "film":
-            gb = self.gate(evidence)
-            gamma, beta = gb.chunk(2, dim=-1)
-            z = gamma * z + beta
+            gamma, beta = self.gate(evidence).chunk(2, dim=-1)
+            return gamma * z + beta
         elif self.mode == "add":
-            z = z + self.gate(evidence)
+            return z + self.gate(evidence)
         elif self.mode == "cross":
             zq = z.unsqueeze(1)
             ek = evidence.unsqueeze(1)
             attn_out, _ = self.gate(zq, ek, ek)
-            z = self.norm(z + attn_out.squeeze(1))
+            return self.norm(z + attn_out.squeeze(1))
         return z
 
 
 class Reasoner(nn.Module):
     """Multi-step latent biological reasoning engine.
 
-    Takes cell embedding, perturbation embedding, and optional covariates,
-    iteratively refines a latent biological reasoning state z_bio over
-    multiple steps.
-
-    Key params:
-      dim, steps, heads, dropout
+    Fuses cell + pert + cov into context, initializes latent,
+    iterates reasoning steps with optional evidence injection.
     """
 
     def __init__(self, dim, steps=8, hidden=None, heads=4, dropout=0.1,
@@ -107,144 +94,136 @@ class Reasoner(nn.Module):
         super().__init__()
         self.dim = dim
         self.steps = steps
-
         self.context_fuse = MLP(dim * 3, dim, hidden=hidden, layers=2, dropout=dropout)
         self.init_proj = nn.Linear(dim, dim)
-
         self.reason_steps = nn.ModuleList([
             ReasonStep(dim, hidden=hidden, heads=heads, dropout=dropout)
             for _ in range(steps)
         ])
-
         self.evidence_gate = EvidenceGate(dim, dropout=dropout, mode=evidence_mode)
+        self.out_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim))
 
-        self.out_proj = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, dim),
-        )
-
-    def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None,
-                return_all=False):
-        """cell_emb: [B, dim], pert_emb: [B, dim], cov_emb: [B, dim] or None
-        evidence: [B, dim] or None -> [B, dim]"""
+    def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None, return_all=False):
         B = cell_emb.size(0)
-        device = cell_emb.device
-
         parts = [cell_emb, pert_emb]
-        if cov_emb is not None:
-            parts.append(cov_emb)
-        else:
-            parts.append(torch.zeros(B, self.dim, device=device))
+        parts.append(cov_emb if cov_emb is not None
+                      else torch.zeros(B, self.dim, device=cell_emb.device))
         context = self.context_fuse(torch.cat(parts, dim=-1))
-
         z = self.init_proj(context)
         z_all = []
-
         for i in range(self.steps):
             z = self.evidence_gate(z, evidence)
             z = self.reason_steps[i](z, context)
             if return_all:
                 z_all.append(z)
-
         z = self.out_proj(z)
-
-        if return_all:
-            return z, z_all
-        return z
+        return (z, z_all) if return_all else z
 
 
 class BioReason(nn.Module):
-    """Full BioReason model for single-cell perturbation prediction.
+    """Full BioReason model.
 
-    Flow:
-      x (control)       -> CellEncoder    -> cell_emb
-      pert              -> PertEncoder    -> pert_emb
-      cov (optional)    -> CovEncoder     -> cov_emb
-      evidence (opt)    -> (EvidenceGate) -> injected into z_bio
-      z_bio = Reasoner(cell_emb, pert_emb, cov_emb, evidence)
-      delta = ExprDecoder(cell_emb, z_bio)
-      pred = x + delta
-
-    Three training stages:
-      Stage 1: basic warm-up (no evidence)
-      Stage 2: evidence-guided latent training
-      Stage 3: latent alignment (no evidence, align with teacher latents)
+    Parameters:
+      evidence_dim: if None, evidence encoder/head are not created.
     """
 
     def __init__(self, input_dim, dim=256, hidden=512, steps=8, heads=4,
                  dropout=0.1, residual=True, pert_mode="id", pert_agg="mean",
-                 num_perts=10000, cov_dims=None, evidence_mode="film"):
+                 num_perts=10000, cov_dims=None, evidence_dim=None,
+                 evidence_mode="film"):
         super().__init__()
         self.input_dim = input_dim
         self.dim = dim
         self.residual = residual
+        self.evidence_dim = evidence_dim
 
         self.cell_encoder = CellEncoder(input_dim, dim, hidden=hidden, dropout=dropout)
         self.pert_encoder = PertEncoder(num_perts, dim, hidden=hidden,
                                          pert_mode=pert_mode, pert_agg=pert_agg,
                                          dropout=dropout)
         self.cov_encoder = CovEncoder(cov_dims or {}, dim, dropout=dropout)
-        self.evidence_encoder = MLP(dim, dim, hidden=hidden, layers=2, dropout=dropout)
 
-        self.reasoner = Reasoner(dim, steps=steps, hidden=hidden,
-                                  heads=heads, dropout=dropout,
-                                  evidence_mode=evidence_mode)
+        # Evidence encoder: only if evidence_dim is set
+        self.evidence_encoder = None
+        if evidence_dim is not None:
+            self.evidence_encoder = MLP(evidence_dim, dim, hidden=hidden,
+                                         layers=2, dropout=dropout)
 
+        self.reasoner = Reasoner(dim, steps=steps, hidden=hidden, heads=heads,
+                                  dropout=dropout, evidence_mode=evidence_mode)
         self.decoder = ExprDecoder(dim, input_dim, hidden=hidden, dropout=dropout)
-        self.evidence_head = MLP(dim, dim, hidden=hidden, layers=1, dropout=dropout)
+
+        # Evidence prediction head: only if evidence_dim is set
+        self.evidence_head = None
+        if evidence_dim is not None:
+            self.evidence_head = MLP(dim, evidence_dim, hidden=hidden, layers=1,
+                                      dropout=dropout)
 
     def forward(self, x, pert, cov=None, evidence=None, target_latent=None,
                 return_latent=True, detach_latent=False):
         """
-        x:             [B, G]  control cell expression
-        pert:          perturbation ids or multi-hot [B] / [B, N]
-        cov:           dict[str, LongTensor[B]]  optional covariates
-        evidence:      [B, E] or None  biological evidence (train only)
-        target_latent: [B, dim] or None  teacher latent for alignment
-        return_latent: bool
-        detach_latent: bool  detach cell_emb gradient before decoder,
-                       prevents the model from bypassing z_bio via a
-                       direct cell_emb→delta shortcut path.
-
-        Returns dict: pred, delta, latent, evidence_pred
+        Returns dict with fixed keys: pred, delta, latent, evidence_pred, target_latent
         """
         cell_emb = self.cell_encoder(x)
         pert_emb = self.pert_encoder(pert)
         cov_emb = self.cov_encoder(cov) if cov else None
 
+        # Evidence
         evidence_emb = None
         if evidence is not None:
+            if self.evidence_encoder is None:
+                raise ValueError(
+                    "evidence_dim must be set in BioReason() when evidence is used. "
+                    f"Got evidence tensor of shape {tuple(evidence.shape)}."
+                )
             evidence_emb = self.evidence_encoder(evidence)
 
         z = self.reasoner(cell_emb, pert_emb, cov_emb, evidence_emb)
 
-        if detach_latent:
-            cell_emb_det = cell_emb.detach()
-        else:
-            cell_emb_det = cell_emb
-
-        delta = self.decoder(cell_emb_det, z)
+        # detach_latent: detach z from the decoder, not cell_emb
+        z_for_dec = z.detach() if detach_latent else z
+        delta = self.decoder(cell_emb, z_for_dec)
         pred = x + delta if self.residual else delta
 
-        evidence_pred = self.evidence_head(z) if evidence is not None else None
+        # Evidence prediction
+        evidence_pred = None
+        if evidence is not None and self.evidence_head is not None:
+            evidence_pred = self.evidence_head(z)
 
-        out = {"pred": pred, "delta": delta}
-        if return_latent:
-            out["latent"] = z
-        if evidence_pred is not None:
-            out["evidence_pred"] = evidence_pred
+        return {
+            "pred": pred,
+            "delta": delta,
+            "latent": z if return_latent else None,
+            "evidence_pred": evidence_pred,
+            "target_latent": target_latent,
+        }
 
-        return out
-
-    def encode(self, x, pert, cov=None):
-        """Encode inputs to latent state (inference, no evidence)."""
+    def forward_latent(self, x, pert, cov=None, evidence=None):
+        """Return only z_bio. Used for stage 2 latent export / stage 3 alignment."""
         cell_emb = self.cell_encoder(x)
         pert_emb = self.pert_encoder(pert)
         cov_emb = self.cov_encoder(cov) if cov else None
-        return self.reasoner(cell_emb, pert_emb, cov_emb, evidence=None)
+        evidence_emb = (self.evidence_encoder(evidence) if evidence is not None
+                         and self.evidence_encoder is not None else None)
+        return self.reasoner(cell_emb, pert_emb, cov_emb, evidence_emb)
+
+    def encode(self, x, pert, cov=None):
+        return self.forward_latent(x, pert, cov=cov, evidence=None)
 
     def predict(self, x, z):
-        """Predict perturbed expression from expression + latent state."""
         cell_emb = self.cell_encoder(x)
         delta = self.decoder(cell_emb, z)
         return x + delta if self.residual else delta
+
+    def freeze_except_reasoner(self):
+        """Freeze all modules except pert_encoder, reasoner, evidence heads."""
+        for name, param in self.named_parameters():
+            if any(x in name for x in ("pert_encoder", "reasoner",
+                                         "evidence_encoder", "evidence_head")):
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
+    def unfreeze_all(self):
+        for param in self.parameters():
+            param.requires_grad = True

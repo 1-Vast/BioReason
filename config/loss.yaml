@@ -7,3 +7,5 @@ loss:
   latent: 1.0
   evidence: 1.0
   mmd: 0.1
+  top_deg: 50
+  latent_metric: "cosine"

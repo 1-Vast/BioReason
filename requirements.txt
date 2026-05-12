@@ -8,3 +8,4 @@ scanpy
 pyyaml
 python-dotenv
 tqdm
+openai

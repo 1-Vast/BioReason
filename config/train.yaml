@@ -11,3 +11,6 @@ train:
   device: "cuda"
   seed: 42
   save_dir: "output"
+  target_latent: null
+  latent_only: false
+  num_workers: 0

@@ -1,7 +1,4 @@
-# BioReason: Evidence-guided latent biological reasoning for single-cell perturbation prediction.
-
-# Core idea:
-# control expression + perturbation -> latent biological reasoning -> perturbed expression prediction
+# BioReason default configuration
 
 project:
   name: "BioReason"
@@ -16,6 +13,10 @@ data:
   dose_key: "dose"
   time_key: "time"
   batch_key: "batch"
+  evidence_key: "evidence"
+  target_mode: "group_mean"
+  pair_by: "cell_type"
+  use_control_as_input: true
   use_hvg: true
   n_hvg: 2000
 
