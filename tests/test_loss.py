@@ -50,7 +50,7 @@ try:
             {"x": x, "y": x, "evidence": torch.randn(B, 16)}, stage=2)
     assert False
 except ValueError as e:
-    assert "shape" in str(e)
+    assert "!=" in str(e)
     print("  5) evidence shape mismatch → ValueError OK")
 
 print("ALL OK")

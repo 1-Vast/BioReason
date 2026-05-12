@@ -1,12 +1,6 @@
 """BioLoss: perturbation prediction loss functions.
 
-Losses (all optional, skip silently if data missing):
-  expr     — MSE(pred, y)
-  delta    — MSE(delta_pred, delta_true)
-  deg      — DEG-weighted MSE (per-gene weighting)
-  latent   — cosine alignment (stage 3) or MSE
-  evidence — MSE(evidence_pred, evidence)
-  mmd      — MMD(pred, y)
+Stage-gated, missing-field-safe. Uses target_latent_mask for stage 3.
 """
 
 import torch
@@ -15,31 +9,23 @@ import torch.nn.functional as F
 
 
 def mmd_loss(x, y, bandwidths=(0.1, 1.0, 10.0)):
-    """Maximum Mean Discrepancy between distributions.
-
-    Multi-bandwidth RBF kernel: small bw for local structure,
-    large bw for global distribution matching.
-    """
-    xx = torch.mm(x, x.t())
-    yy = torch.mm(y, y.t())
-    xy = torch.mm(x, y.t())
-    rx = (x * x).sum(1).unsqueeze(1)
-    ry = (y * y).sum(1).unsqueeze(1)
+    """MMD with multi-bandwidth RBF kernel."""
+    xx = torch.mm(x, x.t()); yy = torch.mm(y, y.t()); xy = torch.mm(x, y.t())
+    rx = (x * x).sum(1).unsqueeze(1); ry = (y * y).sum(1).unsqueeze(1)
     d_xx = (rx + rx.t() - 2 * xx).clamp(min=0)
     d_yy = (ry + ry.t() - 2 * yy).clamp(min=0)
     d_xy = (rx + ry.t() - 2 * xy).clamp(min=0)
     loss = 0.0
     for bw in bandwidths:
-        k_xx = torch.exp(-d_xx / (2 * bw ** 2))
-        k_yy = torch.exp(-d_yy / (2 * bw ** 2))
-        k_xy = torch.exp(-d_xy / (2 * bw ** 2))
+        k_xx = torch.exp(-d_xx / (2 * bw**2))
+        k_yy = torch.exp(-d_yy / (2 * bw**2))
+        k_xy = torch.exp(-d_xy / (2 * bw**2))
         n, m = x.size(0), y.size(0)
-        loss += k_xx.sum() / (n * n) + k_yy.sum() / (m * m) - 2 * k_xy.sum() / (n * m)
+        loss += k_xx.sum()/(n*n) + k_yy.sum()/(m*m) - 2*k_xy.sum()/(n*m)
     return loss / len(bandwidths)
 
 
 def get_deg_mask(batch, top_k=50):
-    """Select top differentially expressed genes by mean |delta| across batch."""
     if "deg_mask" in batch:
         return batch["deg_mask"]
     with torch.no_grad():
@@ -52,7 +38,7 @@ def get_deg_mask(batch, top_k=50):
 
 
 class BioLoss(nn.Module):
-    """Combined loss for BioReason training. Stage-gated, missing-field-safe."""
+    """Combined loss with stage-gating and target_latent_mask support."""
 
     def __init__(self, weights=None):
         super().__init__()
@@ -66,34 +52,40 @@ class BioLoss(nn.Module):
         self.mse_mean = nn.MSELoss(reduction="mean")
 
     def forward(self, out, batch, stage=1):
-        pred = out["pred"]
-        delta_pred = out["delta"]
-        x, y = batch["x"], batch["y"]
-        delta_true = y - x
+        pred = out["pred"]; delta_pred = out["delta"]
+        x, y = batch["x"], batch["y"]; delta_true = y - x
         dev = pred.device
         losses = {}
 
-        # 1. Expression
+        # 1-2. Expression + delta
         losses["expr"] = self.mse_mean(pred, y)
-
-        # 2. Delta
         losses["delta"] = self.mse_mean(delta_pred, delta_true)
 
-        # 3. DEG-weighted (per-gene error × mask, normalized)
+        # 3. DEG-weighted
         deg_mask = get_deg_mask(batch, top_k=self.top_deg)
         err = (pred - y) ** 2
-        losses["deg"] = (err * deg_mask.unsqueeze(0)).sum() / (
-            deg_mask.sum() * pred.size(0)).clamp_min(1.0)
+        losses["deg"] = (err * deg_mask.unsqueeze(0)).sum() / (deg_mask.sum() * pred.size(0)).clamp_min(1.0)
 
-        # 4. Latent alignment (stage 3)
+        # 4. Latent alignment (stage 3) — uses target_latent_mask
         losses["latent"] = torch.tensor(0.0, device=dev)
         target = batch.get("target_latent")
+        mask = batch.get("target_latent_mask")
         z = out.get("latent")
-        if stage == 3 and target is not None and z is not None and z.numel() > 0:
-            if self.latent_metric == "cosine":
-                losses["latent"] = 1.0 - F.cosine_similarity(z, target.detach(), dim=-1).mean()
+        if stage == 3 and target is not None and z is not None:
+            if mask is not None:
+                z_valid = z[mask]
+                t_valid = target[mask]
+                if z_valid.numel() == 0:
+                    pass  # latent_loss stays 0
+                elif self.latent_metric == "cosine":
+                    losses["latent"] = 1.0 - F.cosine_similarity(z_valid, t_valid.detach(), dim=-1).mean()
+                else:
+                    losses["latent"] = self.mse_mean(z_valid, t_valid.detach())
             else:
-                losses["latent"] = self.mse_mean(z, target.detach())
+                if self.latent_metric == "cosine":
+                    losses["latent"] = 1.0 - F.cosine_similarity(z, target.detach(), dim=-1).mean()
+                else:
+                    losses["latent"] = self.mse_mean(z, target.detach())
 
         # 5. Evidence (stage 2)
         losses["evidence"] = torch.tensor(0.0, device=dev)
@@ -101,10 +93,7 @@ class BioLoss(nn.Module):
         ev_true = batch.get("evidence")
         if stage == 2 and ev_pred is not None and ev_true is not None:
             if ev_pred.shape != ev_true.shape:
-                raise ValueError(
-                    f"evidence_pred shape {tuple(ev_pred.shape)} != "
-                    f"evidence shape {tuple(ev_true.shape)}"
-                )
+                raise ValueError(f"evidence_pred {tuple(ev_pred.shape)} != evidence {tuple(ev_true.shape)}")
             losses["evidence"] = self.mse_mean(ev_pred, ev_true)
 
         # 6. MMD(pred, y)

@@ -1,7 +1,6 @@
 """Inference for BioReason — counterfactual perturbation prediction.
 
-No evidence required at inference.
-Supports counterfactual: input control cells + target perturbation → predicted expression.
+Uses checkpoint vocabulary and gene order for reproducibility.
 """
 
 import torch
@@ -11,13 +10,15 @@ from torch.cuda.amp import autocast
 
 
 def load_model(checkpoint_path, model_class=None, device=None):
-    """Load BioReason from checkpoint."""
+    """Load BioReason from checkpoint with all metadata."""
     if model_class is None:
         from .reason import BioReason
         model_class = BioReason
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     config = ckpt.get("config", {})
     model_cfg = config.get("model", {})
+
+    # Use checkpoint dimensions (not inference adata)
     model = model_class(
         input_dim=model_cfg.get("input_dim", 2000),
         dim=model_cfg.get("dim", 256),
@@ -30,6 +31,7 @@ def load_model(checkpoint_path, model_class=None, device=None):
         pert_agg=model_cfg.get("pert_agg", "mean"),
         num_perts=model_cfg.get("num_perts", 10000),
         evidence_dim=model_cfg.get("evidence_dim"),
+        cov_dims=model_cfg.get("cov_dims", {}),
     )
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state, strict=False)
@@ -40,11 +42,10 @@ def load_model(checkpoint_path, model_class=None, device=None):
 
 
 def predict(model, dataloader, device="cuda", use_amp=True, target_pert=None):
-    """Run inference. If target_pert is an int, force that pert id."""
     device = torch.device(device if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    model.eval()
+    model = model.to(device); model.eval()
     preds, deltas, lats, metas, pert_list = [], [], [], [], []
+    pert_strs = []
     with torch.no_grad():
         for batch in dataloader:
             x = batch["x"].to(device)
@@ -59,36 +60,38 @@ def predict(model, dataloader, device="cuda", use_amp=True, target_pert=None):
                 lats.append(out["latent"].cpu().numpy())
             metas.extend(batch.get("meta", [{}]))
             pert_list.extend(pert.cpu().tolist())
+            pert_strs.extend(batch.get("pert_str", []))
     return (np.concatenate(preds, axis=0),
             np.concatenate(deltas, axis=0),
             np.concatenate(lats, axis=0) if lats else np.array([]),
             metas,
-            np.array(pert_list))
+            np.array(pert_list),
+            pert_strs)
 
 
 def predict_counterfactual(model, dataset, pert, batch_size=128, device="cuda"):
-    """Counterfactual inference: override all cells to target perturbation."""
     dataset.set_target_pert(pert)
     from .data import build_loader
     loader = build_loader(dataset, shuffle=False, batch_size=batch_size)
-    preds, deltas, latents, metas, pert_arr = predict(model, loader,
-                                                       device=device,
-                                                       target_pert=dataset._target_pert_id)
-    return preds, deltas, latents, metas, pert_arr
+    preds, deltas, latents, metas, pert_arr, pert_strs = predict(
+        model, loader, device=device, target_pert=dataset._target_pert_id)
+    return preds, deltas, latents, metas, pert_arr, pert_strs
 
 
-def save_pred(preds, deltas, latents, metas, pert_arr, output_dir, prefix="pred"):
-    """Save predictions to npz + optional h5ad."""
+def save_pred(preds, deltas, latents, metas, pert_arr, pert_strs, output_dir, prefix="pred"):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
     np.savez(output_dir / f"{prefix}.npz",
              preds=preds, deltas=deltas, latents=latents,
-             pert=pert_arr,
+             pert=pert_arr, pert_str=np.array(pert_strs),
              indices=np.array([m.get("idx", i) for i, m in enumerate(metas)]))
+
     try:
         import scanpy as sc
         adata = sc.AnnData(X=preds)
-        adata.obs["predicted_perturbation"] = pert_arr.astype(str)
+        adata.obs["predicted_perturbation_id"] = pert_arr
+        adata.obs["predicted_perturbation"] = pert_strs
         adata.obs["source_idx"] = [m.get("source_idx", m.get("idx", i))
                                     for i, m in enumerate(metas)]
         if deltas is not None:

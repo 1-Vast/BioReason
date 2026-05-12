@@ -1,60 +1,52 @@
-"""BioReason: Evidence-guided latent biological reasoning
-for single-cell perturbation prediction.
+"""BioReason: Evidence-guided latent biological reasoning for single-cell perturbation prediction.
 
-Thin CLI entry point. All logic lives in models/.
-Config loading in utils/.
-
+Thin CLI entry. All logic in models/. Config in utils/.
 Usage:
-  python main.py train --config config/default.yaml --h5ad dataset/perturb.h5ad --stage 1
-  python main.py infer --checkpoint output/stage3/model.pt --h5ad dataset/perturb.h5ad --pert TP53_KO --out output/infer
+  python main.py train --h5ad dataset/perturb.h5ad --stage 1
+  python main.py infer --checkpoint output/model.pt --h5ad dataset/perturb.h5ad --pert TP53_KO --out output/infer
   python main.py eval --pred output/infer/pred.npz --truth dataset/perturb.h5ad --out output/eval
   python main.py api-test
 """
 
-import argparse
-import sys
+import argparse, sys, os
 from pathlib import Path
 from utils.config import load_env, merge as merge_cfg
 load_env()
 
 
-# ── CLI ──────────────────────────────────────────────────────────
-
 def build_parser():
-    parser = argparse.ArgumentParser(
-        description="BioReason: evidence-guided latent biological reasoning"
-    )
-    sub = parser.add_subparsers(dest="command", help="train | infer | eval | api-test")
+    p = argparse.ArgumentParser(description="BioReason: evidence-guided latent biological reasoning")
+    sub = p.add_subparsers(dest="command", help="train | infer | eval | api-test")
 
-    p_train = sub.add_parser("train", help="Train BioReason")
-    p_train.add_argument("--config", default="config/default.yaml")
-    p_train.add_argument("--h5ad", required=True)
-    p_train.add_argument("--stage", type=int, default=1, choices=[1, 2, 3])
-    p_train.add_argument("--device", default="cuda")
-    p_train.add_argument("--save_dir", default=None)
-    p_train.add_argument("--target_latent", default=None, help="Stage 3 teacher latent path")
+    pt = sub.add_parser("train", help="Train BioReason")
+    pt.add_argument("--config", default="config/default.yaml")
+    pt.add_argument("--h5ad", required=True)
+    pt.add_argument("--stage", type=int, default=1, choices=[1, 2, 3])
+    pt.add_argument("--device", default="cuda")
+    pt.add_argument("--save_dir", default=None)
+    pt.add_argument("--target_latent", default=None, help="Stage 3 teacher latent path")
 
-    p_infer = sub.add_parser("infer", help="Counterfactual inference")
-    p_infer.add_argument("--config", default="config/default.yaml")
-    p_infer.add_argument("--checkpoint", required=True)
-    p_infer.add_argument("--h5ad", required=True)
-    p_infer.add_argument("--pert", required=True, help="Target perturbation (e.g., TP53_KO)")
-    p_infer.add_argument("--out", default="output/infer")
-    p_infer.add_argument("--device", default="cuda")
-    p_infer.add_argument("--batch_size", type=int, default=128)
+    pi = sub.add_parser("infer", help="Counterfactual inference")
+    pi.add_argument("--config", default="config/default.yaml")
+    pi.add_argument("--checkpoint", required=True)
+    pi.add_argument("--h5ad", required=True)
+    pi.add_argument("--pert", required=True, help="Target perturbation, e.g. TP53_KO")
+    pi.add_argument("--out", default="output/infer")
+    pi.add_argument("--device", default="cuda")
+    pi.add_argument("--batch_size", type=int, default=128)
 
-    p_eval = sub.add_parser("eval", help="Evaluate predictions")
-    p_eval.add_argument("--config", default="config/default.yaml")
-    p_eval.add_argument("--pred", required=True)
-    p_eval.add_argument("--truth", required=True)
-    p_eval.add_argument("--out", default="output/eval")
-    p_eval.add_argument("--top_deg", type=int, default=50)
+    pe = sub.add_parser("eval", help="Evaluate predictions")
+    pe.add_argument("--config", default="config/default.yaml")
+    pe.add_argument("--pred", required=True)
+    pe.add_argument("--truth", required=True)
+    pe.add_argument("--out", default="output/eval")
+    pe.add_argument("--top_deg", type=int, default=50)
 
-    p_api = sub.add_parser("api-test", help="Test LLM API connectivity")
-    return parser
+    pa = sub.add_parser("api-test", help="Test LLM API connectivity")
+    return p
 
 
-# ── Commands ─────────────────────────────────────────────────────
+# ── Train ────────────────────────────────────────────────────────
 
 def cmd_train(args):
     cfg = merge_cfg("config/default.yaml", "config/model.yaml",
@@ -62,10 +54,8 @@ def cmd_train(args):
     train_cfg = cfg.get("train", {})
     train_cfg["stage"] = args.stage
     train_cfg["device"] = args.device
-    if args.save_dir:
-        train_cfg["save_dir"] = args.save_dir
-    if args.target_latent:
-        train_cfg["target_latent"] = args.target_latent
+    if args.save_dir: train_cfg["save_dir"] = args.save_dir
+    if args.target_latent: train_cfg["target_latent"] = args.target_latent
 
     import torch
     from models.data import build_dataset, build_loader, split_data
@@ -81,6 +71,25 @@ def cmd_train(args):
     val_loader = build_loader(val_ds, batch_size=train_cfg.get("batch_size", 128),
                                shuffle=False, num_workers=train_cfg.get("num_workers", 0))
 
+    # Build data_meta for reproducibility
+    data_meta = {
+        "pert_to_id": dataset.pert_to_id,
+        "id_to_pert": dataset.id_to_pert,
+        "pert_cats": dataset.pert_cats,
+        "selected_var_names": dataset.selected_var_names,
+        "input_dim": dataset.input_dim,
+        "evidence_dim": dataset.evidence_dim,
+        "cov_dims": dict(dataset.cov_dims),
+    }
+    # Inject into config for checkpoint
+    cfg["data_meta"] = data_meta
+    model_cfg = cfg.setdefault("model", {})
+    model_cfg["input_dim"] = dataset.input_dim
+    model_cfg["num_perts"] = dataset.n_perts
+    evidence_dim = dataset.evidence_dim or model_cfg.get("evidence_dim")
+    model_cfg["evidence_dim"] = evidence_dim
+    model_cfg["cov_dims"] = dict(dataset.cov_dims)
+
     # Stage 3: attach target latent
     if args.stage == 3:
         path = args.target_latent or train_cfg.get("target_latent")
@@ -88,10 +97,8 @@ def cmd_train(args):
             attach_target_latent(dataset, path)
             print(f"Stage 3: target latent loaded from {path}")
         else:
-            print(f"WARNING: Stage 3 but no target latent found at {path}. latent loss = 0.")
+            print(f"WARNING: Stage 3, no target latent at {path}. latent loss = 0.")
 
-    model_cfg = cfg.get("model", {})
-    evidence_dim = dataset.evidence_dim or model_cfg.get("evidence_dim")
     model = BioReason(
         input_dim=dataset.input_dim,
         dim=model_cfg.get("dim", 256),
@@ -104,33 +111,58 @@ def cmd_train(args):
         pert_agg=model_cfg.get("pert_agg", "mean"),
         num_perts=dataset.n_perts,
         evidence_dim=evidence_dim,
+        cov_dims=dict(dataset.cov_dims),
     )
     loss_fn = BioLoss(cfg.get("loss", {}))
-    train_model(model, train_loader, val_loader, {**cfg, **train_cfg}, loss_fn=loss_fn)
+    full_cfg = {**cfg, **train_cfg}
+    train_model(model, train_loader, val_loader, full_cfg, loss_fn=loss_fn)
 
+
+# ── Infer ────────────────────────────────────────────────────────
 
 def cmd_infer(args):
     cfg = merge_cfg("config/default.yaml", "config/model.yaml", args.config)
     from models.infer import load_model, predict_counterfactual, save_predictions
-    from models.data import build_dataset
+    from models.data import build_dataset, align_adata_to_genes, read_h5ad
 
-    model, _ = load_model(args.checkpoint, device=args.device)
+    model, ckpt_cfg = load_model(args.checkpoint, device=args.device)
+    data_meta = ckpt_cfg.get("data_meta", {})
+
+    # Load adata and align genes
+    adata = read_h5ad(args.h5ad)
+    target_genes = data_meta.get("selected_var_names")
+    if target_genes:
+        adata = align_adata_to_genes(adata, target_genes)
+
     data_cfg = cfg.get("data", {})
     dataset = build_dataset(args.h5ad, data_cfg)
+    # Use checkpoint data's adata after gene alignment
+    dataset.adata = adata
+    dataset.X = adata.X.toarray() if hasattr(adata.X, 'toarray') else np.asarray(adata.X) if 'np' in dir() else __import__('numpy').asarray(adata.X)
+    import numpy as np
+    from scipy.sparse import issparse
+    dataset.X = adata.X.toarray() if issparse(adata.X) else np.asarray(adata.X)
+    dataset.input_dim = dataset.X.shape[1]
+    dataset._build_group_means()
 
-    # Verify perturbation is known
+    # Use checkpoint vocabulary
+    if data_meta.get("pert_to_id"):
+        dataset.set_vocab(data_meta["pert_to_id"], data_meta.get("id_to_pert"))
+
+    # Verify perturbation
     if args.pert not in dataset.pert_to_id:
         raise ValueError(
             f"Unknown perturbation '{args.pert}'. "
             f"Available ({len(dataset.pert_cats)}): {list(dataset.pert_cats)[:20]}..."
         )
 
-    preds, deltas, latents, metas, pert_arr = predict_counterfactual(
-        model, dataset, args.pert, batch_size=args.batch_size, device=args.device,
-    )
-    save_predictions(preds, deltas, latents, metas, pert_arr, args.out)
+    preds, deltas, latents, metas, pert_arr, pert_strs = predict_counterfactual(
+        model, dataset, args.pert, batch_size=args.batch_size, device=args.device)
+    save_predictions(preds, deltas, latents, metas, pert_arr, pert_strs, args.out)
     print(f"Inference done: {preds.shape[0]} cells x {preds.shape[1]} genes")
 
+
+# ── Eval ─────────────────────────────────────────────────────────
 
 def cmd_eval(args):
     import numpy as np
@@ -146,15 +178,14 @@ def cmd_eval(args):
     adata = load_h5ad(args.truth)
     X = adata.X.toarray() if issparse(adata.X) else np.asarray(adata.X)
     y_true = X[:preds.shape[0]]
-
-    metrics = compute_metrics(y_true, preds, delta_pred=deltas,
-                               latents=latents, top_deg=args.top_deg)
+    metrics = compute_metrics(y_true, preds, delta_pred=deltas, latents=latents, top_deg=args.top_deg)
     save_metrics(metrics, args.out)
     print("\n=== BioReason Evaluation ===")
-    for k, v in metrics.items():
-        print(f"  {k}: {v:.6f}")
+    for k, v in metrics.items(): print(f"  {k}: {v:.6f}")
     print("============================\n")
 
+
+# ── API test ─────────────────────────────────────────────────────
 
 def cmd_api_test(args):
     from utils.llm import get_llm_config, test_llm_connection
@@ -164,8 +195,7 @@ def cmd_api_test(args):
     print(f"Model:    {cfg['model']}")
     print(f"Key:      {'***configured***' if cfg['api_key'] else 'MISSING'}")
     result = test_llm_connection()
-    print(f"\nConnection test: {'OK' if result['ok'] else 'FAILED'}")
-    print(f"Reason: {result['reason']}")
+    print(f"\nConnection: {'OK' if result['ok'] else 'FAILED'} ({result['reason']})")
     if result.get("response"):
         print(f"Response: {result['response']}")
 
@@ -175,14 +205,9 @@ def cmd_api_test(args):
 def main():
     parser = build_parser()
     args = parser.parse_args()
-    if args.command == "train":
-        cmd_train(args)
-    elif args.command == "infer":
-        cmd_infer(args)
-    elif args.command == "eval":
-        cmd_eval(args)
-    elif args.command == "api-test":
-        cmd_api_test(args)
+    cmds = {"train": cmd_train, "infer": cmd_infer, "eval": cmd_eval, "api-test": cmd_api_test}
+    if args.command in cmds:
+        cmds[args.command](args)
     else:
         parser.print_help()
 

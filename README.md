@@ -225,6 +225,24 @@ Tests LLM API connectivity. No data sent.
 
 7. **API keys**: read from `.env` via `python-dotenv`. Never hardcoded. `.env` is git-ignored.
 
+8. **Control input**: `use_control_as_input=True` draws input from the control pool (cell-type matched when possible), not the perturbed cell itself. This ensures realistic baseline for counterfactual prediction.
+
+---
+
+## Reproducibility Notes
+
+BioReason checkpoints are self-contained for reproducible inference:
+
+1. **Perturbation vocabulary** is saved in checkpoint (`pert_to_id`, `id_to_pert`, `pert_cats`). Inference uses the checkpoint vocabulary, not the inference h5ad vocabulary. Unknown perturbations in the checkpoint vocab can still be targeted.
+
+2. **Gene order** (`selected_var_names`) is saved in checkpoint. Inference aligns input genes to training order via `align_adata_to_genes()`. Missing genes are zero-filled; extra genes are ignored.
+
+3. **Model dimensions** (`input_dim`, `num_perts`, `evidence_dim`, `cov_dims`) are frozen in the checkpoint. `load_model()` initializes from checkpoint values to prevent embedding shape mismatch.
+
+4. **Covariate vocabularies** are frozen in checkpoint. Unknown inference covariates are mapped to 0.
+
+5. **Target latent mask** prevents Stage 3 latent loss from aligning against zero vectors. Only samples with valid teacher latents contribute to the alignment loss.
+
 ---
 
 ## File Index
@@ -265,12 +283,17 @@ Tests LLM API connectivity. No data sent.
 
 | File | Purpose |
 |------|---------|
-| `check.py` | Run all tests |
+| `check.py` | Run all 10 tests |
 | `test_forward.py` | Forward pass with evidence_dim |
-| `test_loss.py` | Stage-gated loss computation |
+| `test_loss.py` | Stage-gated loss, mask, cosine |
 | `test_data.py` | Dataset target construction |
 | `test_infer.py` | Counterfactual inference |
 | `test_llm_config.py` | API config (no real key) |
+| `test_control_input.py` | Control pool input sampling |
+| `test_vocab_checkpoint.py` | Checkpoint vocab/dims preservation |
+| `test_gene_align.py` | Gene alignment with missing/extra genes |
+| `test_target_latent_mask.py` | Latent mask for stage 3 alignment |
+| `test_cov_dims.py` | Covariate dimensions in model |
 
 ---
 
