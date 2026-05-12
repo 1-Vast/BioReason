@@ -12,3 +12,5 @@ model:
   pert_mode: "id"
   pert_agg: "mean"
   evidence_dim: null
+  evidence_gate: "confidence"
+  use_evidence_conf: true

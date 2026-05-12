@@ -12,6 +12,8 @@ tests = [
     "test_sparse_memory", "test_mmd_amp_stability",
     "test_atomic_checkpoint", "test_batchnorm_tail_batch",
     "test_infer_prealloc",
+    "test_prior_kb", "test_prior_encode", "test_prior_pipeline",
+    "test_llm_json", "test_trust_gate",
 ]
 passed, failed = 0, 0
 

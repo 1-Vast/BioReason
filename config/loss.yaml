@@ -7,6 +7,8 @@ loss:
   latent: 1.0
   evidence: 1.0
   mmd: 0.1
+  trust: 0.0
+  trust_target: null
   top_deg: 50
   latent_metric: "cosine"
   mmd_max_samples: 128

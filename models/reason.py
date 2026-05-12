@@ -46,15 +46,16 @@ class ReasonStep(nn.Module):
 
 
 class EvidenceGate(nn.Module):
-    """Injects biological evidence into latent state.
+    """Confidence-aware evidence gate. Trust score modulates injection strength.
 
     Training: evidence provided (DEG, pathway, TF scores).
     Inference: evidence=None → identity (no evidence leak).
     """
 
-    def __init__(self, dim, dropout=0.1, mode="film"):
+    def __init__(self, dim, dropout=0.1, mode="film", use_conf=True):
         super().__init__()
         self.mode = mode
+        self.use_conf = use_conf
         if mode == "film":
             self.gate = nn.Sequential(
                 nn.Linear(dim, dim), nn.GELU(), nn.Dropout(dropout),
@@ -65,21 +66,33 @@ class EvidenceGate(nn.Module):
         elif mode == "cross":
             self.gate = nn.MultiheadAttention(dim, 4, batch_first=True, dropout=dropout)
             self.norm = nn.LayerNorm(dim)
+        if use_conf:
+            self.score = nn.Sequential(
+                nn.Linear(dim * 2, dim), nn.GELU(), nn.Linear(dim, 1), nn.Sigmoid()
+            )
 
-    def forward(self, z, evidence=None):
+    def forward(self, z, evidence=None, context=None, return_score=False):
         if evidence is None:
-            return z
+            return (z, None) if return_score else z
         if self.mode == "film":
             gamma, beta = self.gate(evidence).chunk(2, dim=-1)
-            return gamma * z + beta
+            if self.use_conf and hasattr(self, 'score'):
+                trust = self.score(torch.cat([z, evidence], dim=-1))
+                gamma = gamma * trust
+                beta = beta * trust
+            else:
+                trust = torch.ones(z.size(0), 1, device=z.device)
+            z = gamma * z + beta
         elif self.mode == "add":
-            return z + self.gate(evidence)
+            z = z + self.gate(evidence)
+            trust = torch.ones(z.size(0), 1, device=z.device) if return_score else None
         elif self.mode == "cross":
             zq = z.unsqueeze(1)
             ek = evidence.unsqueeze(1)
             attn_out, _ = self.gate(zq, ek, ek)
-            return self.norm(z + attn_out.squeeze(1))
-        return z
+            z = self.norm(z + attn_out.squeeze(1))
+            trust = torch.ones(z.size(0), 1, device=z.device) if return_score else None
+        return (z, trust) if return_score else z
 
 
 class Reasoner(nn.Module):
@@ -90,7 +103,7 @@ class Reasoner(nn.Module):
     """
 
     def __init__(self, dim, steps=8, hidden=None, heads=4, dropout=0.1,
-                 evidence_mode="film"):
+                 evidence_mode="film", use_evidence_conf=True):
         super().__init__()
         self.dim = dim
         self.steps = steps
@@ -100,23 +113,33 @@ class Reasoner(nn.Module):
             ReasonStep(dim, hidden=hidden, heads=heads, dropout=dropout)
             for _ in range(steps)
         ])
-        self.evidence_gate = EvidenceGate(dim, dropout=dropout, mode=evidence_mode)
+        self.evidence_gate = EvidenceGate(dim, dropout=dropout, mode=evidence_mode, use_conf=use_evidence_conf)
         self.out_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim))
 
-    def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None, return_all=False):
+    def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None, return_all=False, return_trust=False):
         B = cell_emb.size(0)
         parts = [cell_emb, pert_emb]
         parts.append(cov_emb if cov_emb is not None
                       else torch.zeros(B, self.dim, device=cell_emb.device))
         context = self.context_fuse(torch.cat(parts, dim=-1))
         z = self.init_proj(context)
-        z_all = []
+        z_all = []; trust_all = []
         for i in range(self.steps):
-            z = self.evidence_gate(z, evidence)
+            if evidence is not None and return_trust:
+                z, trust = self.evidence_gate(z, evidence, context=context, return_score=True)
+                trust_all.append(trust)
+            else:
+                z = self.evidence_gate(z, evidence)
             z = self.reason_steps[i](z, context)
             if return_all:
                 z_all.append(z)
         z = self.out_proj(z)
+        if return_all and return_trust:
+            t = torch.stack(trust_all, dim=1).mean(dim=1) if trust_all else None
+            return z, z_all, t
+        if return_trust:
+            t = torch.stack(trust_all, dim=1).mean(dim=1) if trust_all else None
+            return z, t
         return (z, z_all) if return_all else z
 
 
@@ -130,7 +153,7 @@ class BioReason(nn.Module):
     def __init__(self, input_dim, dim=256, hidden=512, steps=8, heads=4,
                  dropout=0.1, residual=True, pert_mode="id", pert_agg="mean",
                  num_perts=10000, cov_dims=None, evidence_dim=None,
-                 evidence_mode="film"):
+                 evidence_mode="film", use_evidence_conf=True):
         super().__init__()
         self.input_dim = input_dim
         self.dim = dim
@@ -150,7 +173,8 @@ class BioReason(nn.Module):
                                          layers=2, dropout=dropout)
 
         self.reasoner = Reasoner(dim, steps=steps, hidden=hidden, heads=heads,
-                                  dropout=dropout, evidence_mode=evidence_mode)
+                                   dropout=dropout, evidence_mode=evidence_mode,
+                                   use_evidence_conf=use_evidence_conf)
         self.decoder = ExprDecoder(dim, input_dim, hidden=hidden, dropout=dropout)
 
         # Evidence prediction head: only if evidence_dim is set
@@ -162,7 +186,7 @@ class BioReason(nn.Module):
     def forward(self, x, pert, cov=None, evidence=None, target_latent=None,
                 return_latent=True, detach_latent=False):
         """
-        Returns dict with fixed keys: pred, delta, latent, evidence_pred, target_latent
+        Returns dict with fixed keys: pred, delta, latent, evidence_pred, target_latent, trust
         """
         cell_emb = self.cell_encoder(x)
         pert_emb = self.pert_encoder(pert)
@@ -178,7 +202,7 @@ class BioReason(nn.Module):
                 )
             evidence_emb = self.evidence_encoder(evidence)
 
-        z = self.reasoner(cell_emb, pert_emb, cov_emb, evidence_emb)
+        z, trust = self.reasoner(cell_emb, pert_emb, cov_emb, evidence_emb, return_trust=True)
 
         # detach_latent: detach z from the decoder, not cell_emb
         z_for_dec = z.detach() if detach_latent else z
@@ -196,6 +220,7 @@ class BioReason(nn.Module):
             "latent": z if return_latent else None,
             "evidence_pred": evidence_pred,
             "target_latent": target_latent,
+            "trust": trust,
         }
 
     def forward_latent(self, x, pert, cov=None, evidence=None):

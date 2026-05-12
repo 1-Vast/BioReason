@@ -104,6 +104,82 @@ L_expr+L_delta       +L_evidence+L_mmd       +L_latent(cosine)
 
 ---
 
+## Stage 0: Evidence Prior Construction
+
+Before training, biological evidence priors can be constructed from a **local knowledge base (KB)** with an optional **LLM fallback**.
+
+### Design Principles
+
+- **Local KB first**: A JSON dictionary of perturbation → biological mechanism is the primary source. LLM is only invoked when a perturbation is missing from the KB and `--use_llm` is set.
+- **LLM never in training/forward**: LLM calls are restricted to offline prior construction. They are never used during model training or inference.
+- **Confidence filtering**: Priors with `confidence_score < min_conf` (default 0.5) are zeroed out — no evidence is injected for low-confidence perturbations.
+- **Hash encoder default**: Text-to-vector encoding uses `sklearn.feature_extraction.text.HashingVectorizer` (no extra dependencies, deterministic).
+
+### Usage
+
+```bash
+# Local KB only (recommended)
+python main.py prior --h5ad dataset/perturb.h5ad --out dataset/perturb_with_evidence.h5ad --kb dataset/kb/prior.json
+
+# With LLM fallback for missing perturbations
+python main.py prior --h5ad dataset/perturb.h5ad --out dataset/perturb_with_evidence.h5ad --kb dataset/kb/prior.json --use_llm
+
+# Custom settings
+python main.py prior --h5ad dataset/perturb.h5ad --out output/with_evidence.h5ad \
+  --kb dataset/kb/prior.json --min_conf 0.6 --evidence_dim 256 --encoder hash \
+  --audit output/prior_audit.csv
+```
+
+### KB Format
+
+```json
+{
+  "TP53_KO": {
+    "description": "TP53 knockout disrupts DNA damage response and cell-cycle checkpoint.",
+    "confidence_score": 0.95,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "DNA damage response", "direction": "down", "confidence": 0.95}
+    ],
+    "tf_activity": [{"tf": "TP53", "direction": "down"}],
+    "marker_genes": [{"gene": "CDKN1A", "direction": "down"}]
+  }
+}
+```
+
+### Output
+
+The pipeline writes into the output `.h5ad`:
+- `adata.obsm["evidence"]` — evidence vectors [N_cells, evidence_dim]
+- `adata.obs["evidence_conf"]` — confidence scores per cell
+- `adata.obs["evidence_source"]` — "local", "llm", "control", or "miss"
+- `adata.uns["evidence_audit"]` — per-perturbation audit records
+
+---
+
+## Trust Gate — Confidence-Aware Evidence Injection
+
+BioReason includes a **confidence-aware evidence gate** that modulates how strongly biological evidence is injected into the latent reasoning state.
+
+- **Trust score**: A learned sigmoid head predicts a per-sample confidence score `trust ∈ [0, 1]` from the latent state and evidence vector.
+- **Modulation**: The trust score scales the FiLM gate parameters (`gamma`, `beta`), reducing evidence influence when the model is uncertain.
+- **Training target** (optional): If `trust_w > 0`, the trust score is regularized against `evidence_conf` from the prior construction step.
+- **Inference**: Evidence is never provided at inference time, so trust defaults to `None`.
+
+```yaml
+# config/model.yaml
+model:
+  evidence_gate: "confidence"   # enables trust scoring
+  use_evidence_conf: true       # uses confidence head
+
+# config/loss.yaml
+loss:
+  trust: 0.0                    # weight for trust regularization
+  trust_target: null            # unused (targets from evidence_conf)
+```
+
+---
+
 ## Installation
 
 ```bash

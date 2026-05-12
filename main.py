@@ -11,7 +11,7 @@ load_env()
 
 def build_parser():
     p = argparse.ArgumentParser(description="BioReason: evidence-guided latent biological reasoning")
-    sub = p.add_subparsers(dest="command", help="train | infer | eval | api-test")
+    sub = p.add_subparsers(dest="command", help="train | infer | eval | api-test | prior")
 
     pt = sub.add_parser("train", help="Train BioReason")
     pt.add_argument("--config", default="config/default.yaml")
@@ -57,6 +57,20 @@ def build_parser():
     pe.add_argument("--top_deg", type=int, default=50)
 
     pa = sub.add_parser("api-test", help="Test LLM API connectivity")
+
+    pp = sub.add_parser("prior", help="Stage 0: build evidence prior")
+    pp.add_argument("--h5ad", required=True)
+    pp.add_argument("--out", required=True)
+    pp.add_argument("--pert_key", default="perturbation")
+    pp.add_argument("--control_label", default="control")
+    pp.add_argument("--kb", default=None, help="Path to local KB JSON")
+    pp.add_argument("--use_llm", action="store_true", default=False)
+    pp.add_argument("--min_conf", type=float, default=0.5)
+    pp.add_argument("--evidence_dim", type=int, default=128)
+    pp.add_argument("--encoder", default="hash", choices=["hash", "sentence"])
+    pp.add_argument("--model_name", default=None)
+    pp.add_argument("--audit", default="output/prior_audit.csv")
+
     return p
 
 
@@ -233,10 +247,23 @@ def cmd_api_test(args):
     print(f"Connection: {'OK' if result['ok'] else 'FAILED'} ({result['reason']})")
 
 
+def cmd_prior(args):
+    from utils.prior import run_prior
+    if args.use_llm:
+        from utils.llm import has_llm_key
+        if not has_llm_key():
+            print("WARNING: --use_llm set but no API key found. Using local KB only.")
+            args.use_llm = False
+    run_prior(args.h5ad, args.out, pert_key=args.pert_key, control_label=args.control_label,
+              kb_path=args.kb, use_llm=args.use_llm, min_conf=args.min_conf,
+              evidence_dim=args.evidence_dim, encoder=args.encoder,
+              model_name=args.model_name, audit_out=args.audit)
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
-    cmds = {"train": cmd_train, "infer": cmd_infer, "eval": cmd_eval, "api-test": cmd_api_test}
+    cmds = {"train": cmd_train, "infer": cmd_infer, "eval": cmd_eval, "api-test": cmd_api_test, "prior": cmd_prior}
     if args.command in cmds:
         cmds[args.command](args)
     else:

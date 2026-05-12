@@ -24,3 +24,14 @@ data:
 
 eval:
   top_deg: 50
+
+prior:
+  pert_key: "perturbation"
+  control_label: "control"
+  kb: "dataset/kb/prior.json"
+  use_llm: false
+  min_conf: 0.5
+  evidence_dim: 128
+  encoder: "hash"
+  model_name: null
+  audit: "output/prior_audit.csv"

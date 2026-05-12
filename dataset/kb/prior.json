@@ -1,0 +1,13 @@
+{
+  "TP53_KO": {
+    "description": "TP53 knockout disrupts DNA damage response and cell-cycle checkpoint.",
+    "confidence_score": 0.95,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "DNA damage response", "direction": "down", "confidence": 0.95},
+      {"pathway": "cell cycle checkpoint", "direction": "down", "confidence": 0.90}
+    ],
+    "tf_activity": [{"tf": "TP53", "direction": "down"}],
+    "marker_genes": [{"gene": "CDKN1A", "direction": "down"}, {"gene": "BAX", "direction": "down"}]
+  }
+}

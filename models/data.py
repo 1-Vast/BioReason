@@ -106,7 +106,7 @@ def bio_collate_fn(batch):
             collated[k] = {ck: torch.stack([v[ck] for v in vals]) for ck in cov_keys}
         elif k in ("meta", "pert_str"):
             collated[k] = vals
-        elif k == "evidence":
+        elif k in ("evidence", "evidence_conf", "trust"):
             non_none = [v for v in vals if v is not None]
             collated[k] = torch.stack(non_none) if non_none else None
         elif k == "target_latent":
@@ -195,6 +195,9 @@ class PertDataset(Dataset):
         if evidence_key and evidence_key in adata.obsm:
             ev = adata.obsm[evidence_key]
             self.evidence_dim = ev.shape[1] if ev.ndim == 2 else 1
+
+        # Evidence confidence
+        self.has_evidence_conf = "evidence_conf" in adata.obs
 
         # Group means (sparse-safe)
         self.cache_group_means = cache_group_means
@@ -340,6 +343,7 @@ class PertDataset(Dataset):
             "x": x, "y": y,
             "pert": torch.tensor(pert_id, dtype=torch.long),
             "pert_str": pert_str, "cov": cov, "evidence": evidence,
+            "evidence_conf": torch.tensor(float(obs.get("evidence_conf", 1.0)), dtype=torch.float32) if self.has_evidence_conf else None,
             "target_latent": target_latent,
             "target_latent_mask": torch.tensor(mask, dtype=torch.bool),
             "meta": {"idx": idx, "source_idx": idx, "target_idx": -1,

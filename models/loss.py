@@ -41,11 +41,15 @@ def get_deg_mask(batch, top_k=50):
 class BioLoss(nn.Module):
     def __init__(self, weights=None):
         super().__init__()
-        self.weights = weights or {"expr":1.0,"delta":1.0,"deg":2.0,"latent":1.0,"evidence":1.0,"mmd":0.1}
+        self.weights = weights or {"expr":1.0,"delta":1.0,"deg":2.0,"latent":1.0,"evidence":1.0,"mmd":0.1,"trust":0.0}
         self.top_deg = self.weights.pop("top_deg", 50)
         self.latent_metric = self.weights.pop("latent_metric", "cosine")
         self.mmd_max_samples = self.weights.pop("mmd_max_samples", 128)
         self.mmd_every = self.weights.pop("mmd_every", 1)
+        self.trust_w = self.weights.pop("trust", 0.0)
+        self.trust_target = self.weights.pop("trust_target", None)
+        # Put trust weight back so total includes it
+        self.weights["trust"] = self.trust_w
         self.mse_none = nn.MSELoss(reduction="none")
         self.mse_mean = nn.MSELoss(reduction="mean")
         self._step_counter = 0
@@ -81,6 +85,13 @@ class BioLoss(nn.Module):
             if ev_pred.shape != ev_true.shape:
                 raise ValueError(f"evidence_pred {tuple(ev_pred.shape)} != evidence {tuple(ev_true.shape)}")
             losses["evidence"] = self.mse_mean(ev_pred, ev_true)
+
+        # Trust regularization
+        losses["trust"] = torch.tensor(0.0, device=dev)
+        if self.trust_w > 0 and out.get("trust") is not None and batch.get("evidence_conf") is not None:
+            conf = batch["evidence_conf"].to(dev).float().view(-1, 1)
+            tr = out["trust"].float().view(-1, 1)
+            losses["trust"] = self.mse_mean(tr, conf)
 
         # MMD: skip if not at mmd_every interval
         losses["mmd"] = torch.tensor(0.0, device=dev)

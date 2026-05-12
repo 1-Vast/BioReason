@@ -18,6 +18,8 @@ __pycache__/
 dataset/*
 !dataset/README.md
 !dataset/.gitkeep
+!dataset/kb/
+!dataset/kb/prior.json
 
 # Output (keep only README and .gitkeep)
 output/*
