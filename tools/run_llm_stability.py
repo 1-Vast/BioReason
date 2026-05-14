@@ -311,7 +311,11 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
             dst = shared / f"stage{stage}"
             if dst.exists():
                 shutil.rmtree(dst)
-            shutil.copytree(stage_dir, dst)
+            dst.mkdir(parents=True, exist_ok=True)
+            for name in ("model.pt", "target_latent.pt"):
+                src = stage_dir / name
+                if src.exists():
+                    shutil.copy2(src, dst / name)
         if not ok:
             row.update(stage_metrics)
             row["status"] = f"failed_stage{stage}"
@@ -357,6 +361,21 @@ def main() -> None:
               "delta_deg", "delta_top50", "delta_delta_pearson"]
     rows = []
     zero_by_key: dict[tuple[str, str, str], dict] = {}
+    completed: set[tuple[str, str, str, str]] = set()
+    if results_path.exists():
+        try:
+            with results_path.open("r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            for row in rows:
+                if row.get("status") == "pass":
+                    completed.add((row.get("seed", ""), row.get("split", ""),
+                                   row.get("evidence", ""), row.get("config", "")))
+                    if row.get("evidence") == "zero":
+                        zero_by_key[(row.get("seed", ""), row.get("split", ""),
+                                     row.get("config", ""))] = row
+        except Exception:
+            rows = []
+            completed = set()
     batch_size, workers = 4096, 0 if args.preload_cache_to_gpu else 8
     try:
         for seed in [s.strip() for s in args.seeds.split(",") if s.strip()]:
@@ -372,6 +391,8 @@ def main() -> None:
                     h5ad = ensure_evidence(args, base, seed, split, evidence, out_dir)
                     audit_or_die(h5ad, out_dir)
                     for config_name, cfg in CONFIGS.items():
+                        if (seed, split, evidence, config_name) in completed:
+                            continue
                         row = train_run(args, h5ad, seed, split, evidence, config_name, cfg,
                                         out_dir, batch_size, workers)
                         key = (seed, split, config_name)
