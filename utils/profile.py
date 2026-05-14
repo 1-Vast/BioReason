@@ -41,6 +41,9 @@ def profile_loader(loader, device, batches=20):
         h2d = tick()
         stats["h2d_time"].append(h2d)
 
+    if not stats["data_wait"]:
+        print("  no batches available for profiling")
+        return stats
     print(f"  avg data wait: {sum(stats['data_wait'])/len(stats['data_wait'])*1000:.1f} ms")
     print(f"  avg H2D transfer: {sum(stats['h2d_time'])/len(stats['h2d_time'])*1000:.1f} ms")
     return stats
@@ -78,6 +81,9 @@ def profile_train_step(model, loader, loss_fn, optimizer, device, stage=1, batch
         stats["backward"].append(step_t - forward_t)
         stats["mem"].append(gpu_mem_gb())
 
+    if not stats["forward"]:
+        print("  no batches available for train-step profiling")
+        return stats
     avg_fwd = sum(stats["forward"]) / len(stats["forward"]) * 1000
     avg_bwd = sum(stats["backward"]) / len(stats["backward"]) * 1000
     avg_step = sum(stats["step"]) / len(stats["step"]) * 1000

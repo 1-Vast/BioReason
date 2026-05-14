@@ -246,6 +246,19 @@ def build_cache_if_needed(args, h5ad: Path, seed: str, split: str, evidence: str
     return cache_dir
 
 
+def cache_train_count(cache_dir: Path | None) -> int | None:
+    if not cache_dir:
+        return None
+    meta = cache_dir / "meta.json"
+    if not meta.exists():
+        return None
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        return int(data.get("split_counts", {}).get("train", 0))
+    except Exception:
+        return None
+
+
 def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_name: str,
               cfg: dict, out_dir: Path, batch_size: int, workers: int) -> dict:
     exp = f"s{seed}_{split}_{evidence}_{config_name}"
@@ -255,8 +268,12 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
     shared = out_dir / "tmp_run/shared"
     if log.exists():
         log.unlink()
-    write_config(config_path, cfg, out_dir, batch_size, workers)
     cache_dir = build_cache_if_needed(args, h5ad, seed, split, evidence, out_dir)
+    effective_batch = batch_size
+    train_count = cache_train_count(cache_dir)
+    if train_count is not None and train_count > 0 and train_count < effective_batch:
+        effective_batch = train_count
+    write_config(config_path, cfg, out_dir, effective_batch, workers)
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "seed": seed,
@@ -264,7 +281,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
         "evidence": evidence,
         "config": config_name,
         "experiment": exp,
-        "batch_size": batch_size,
+        "batch_size": effective_batch,
         "num_workers": workers,
         "cache": bool(cache_dir),
         "preload_cache_to_gpu": bool(args.preload_cache_to_gpu),
@@ -274,7 +291,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
     for stage in (1, 2, 3):
         cmd = [sys.executable, "main.py", "train", "--h5ad", str(h5ad), "--config", str(config_path),
                "--stage", str(stage), "--save_dir", str(save_dir), "--device", "cuda",
-               "--batch_size", str(batch_size), "--num_workers", str(workers), "--progress", "--profile", "--compile"]
+               "--batch_size", str(effective_batch), "--num_workers", str(workers), "--progress", "--profile", "--compile"]
         if cache_dir:
             cmd += ["--use_cache", "--cache_dir", str(cache_dir)]
             if args.preload_cache_to_gpu:
