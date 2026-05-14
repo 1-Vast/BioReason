@@ -123,6 +123,10 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
         if hasattr(model, "unfreeze_all"):
             model.unfreeze_all()
 
+    def scalar_avg(name, denom):
+        val = loss_sum[name] / denom
+        return float(val.item()) if isinstance(val, torch.Tensor) else val
+
     for bi, batch_cpu in enumerate(bar):
         t_data_end = time.perf_counter()
         t_data += t_data_end - t_step_start
@@ -245,12 +249,13 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
         for k in loss_sum:
             v = L.get(k)
             if isinstance(v, torch.Tensor) and v.numel() > 0:
-                loss_sum[k] += v.detach().item()
+                loss_sum[k] = loss_sum[k] + v.detach()
             elif v is not None:
                 loss_sum[k] += float(v)
 
         if progress and bar is not None and (bi + 1) % log_every == 0:
-            avg_loss = loss_sum["loss"] / (bi + 1)
+            avg_loss_v = loss_sum["loss"] / (bi + 1)
+            avg_loss = float(avg_loss_v.item()) if isinstance(avg_loss_v, torch.Tensor) else avg_loss_v
             extra = {"mem": f"{gpu_mem_gb():.1f}GB"}
             if gate_count > 0:
                 gate_mean = gate_sum / gate_count
@@ -261,21 +266,24 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
                 })
             if warm_active and evi_log:
                 extra.update({
-                    "evi_gain": short_float(loss_sum["evi_gain"] / (bi + 1)),
-                    "z_shift": short_float(loss_sum["z_shift"] / (bi + 1)),
-                    "evi_rec": short_float(loss_sum["evi_rec"] / (bi + 1)),
-                    "latent_only": short_float(loss_sum["latent_only"] / (bi + 1)),
+                    "evi_gain": short_float(scalar_avg("evi_gain", bi + 1)),
+                    "z_shift": short_float(scalar_avg("z_shift", bi + 1)),
+                    "evi_rec": short_float(scalar_avg("evi_rec", bi + 1)),
+                    "latent_only": short_float(scalar_avg("latent_only", bi + 1)),
                 })
             elif stage == 3 and latent_only_bp:
                 extra.update({
-                    "latent_align": short_float(loss_sum["latent_align"] / (bi + 1)),
-                    "latent_only": short_float(loss_sum["latent_only"] / (bi + 1)),
+                    "latent_align": short_float(scalar_avg("latent_align", bi + 1)),
+                    "latent_only": short_float(scalar_avg("latent_only", bi + 1)),
                 })
             update_bar_postfix(bar, loss_dict={"loss": avg_loss}, extra=extra)
         t_step_start = time.perf_counter()
 
     n = max(n_batches, 1)
-    stats = {k: v / n for k, v in loss_sum.items()}
+    stats = {}
+    for k, v in loss_sum.items():
+        avg = v / n
+        stats[k] = float(avg.item()) if isinstance(avg, torch.Tensor) else avg
     stats["data_time"] = t_data
     stats["samples"] = n_samples
     return stats
@@ -393,6 +401,8 @@ def train_model(model, train_loader, val_loader, config, loss_fn=None):
     device = get_device(config.get("device", "cuda"))
     model = model.to(device)
     if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         try:
             torch.set_float32_matmul_precision(config.get("matmul_precision", "high"))

@@ -218,6 +218,23 @@ def audit_or_die(h5ad: Path, out_dir: Path) -> None:
         raise RuntimeError(f"leak audit failed: {h5ad}")
 
 
+def build_cache_if_needed(args, h5ad: Path, seed: str, split: str, evidence: str,
+                          out_dir: Path) -> Path | None:
+    if not args.use_cache:
+        return None
+    cache_dir = Path(args.cache_root) / f"{h5ad.stem}"
+    if (cache_dir / "meta.json").exists():
+        return cache_dir
+    log = out_dir / "logs/cache_build.summary.txt"
+    ok, _ = run([sys.executable, "tools/build_cache.py", "--h5ad", str(h5ad),
+                 "--out", str(cache_dir), "--splits", "train,val,test",
+                 "--target_mode", "group_mean", "--control_input_mode", "control_mean",
+                 "--dtype", "float16"], log, 7200)
+    if not ok:
+        raise RuntimeError(f"cache build failed: {h5ad}")
+    return cache_dir
+
+
 def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_name: str,
               cfg: dict, out_dir: Path, batch_size: int, workers: int) -> dict:
     exp = f"s{seed}_{split}_{evidence}_{config_name}"
@@ -228,6 +245,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
     if log.exists():
         log.unlink()
     write_config(config_path, cfg, out_dir, batch_size, workers)
+    cache_dir = build_cache_if_needed(args, h5ad, seed, split, evidence, out_dir)
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "seed": seed,
@@ -237,6 +255,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
         "experiment": exp,
         "batch_size": batch_size,
         "num_workers": workers,
+        "cache": bool(cache_dir),
         "status": "running",
     }
     stage_metrics = {}
@@ -244,6 +263,10 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
         cmd = [sys.executable, "main.py", "train", "--h5ad", str(h5ad), "--config", str(config_path),
                "--stage", str(stage), "--save_dir", str(save_dir), "--device", "cuda",
                "--batch_size", str(batch_size), "--num_workers", str(workers), "--progress", "--profile", "--compile"]
+        if cache_dir:
+            cmd += ["--use_cache", "--cache_dir", str(cache_dir)]
+            if args.preload_cache_to_gpu:
+                cmd += ["--preload_cache_to_gpu"]
         if stage == 3 and (shared / "stage2/target_latent.pt").exists():
             cmd += ["--target_latent", str(shared / "stage2/target_latent.pt")]
         ok, text = run(cmd, log, args.run_timeout)
@@ -272,6 +295,11 @@ def main() -> None:
     ap.add_argument("--splits", default="heldout,lowcell_5,lowcell_10,lowcell_20,lowcell_50")
     ap.add_argument("--evidence", default="zero,struct_llm,hybrid_llm")
     ap.add_argument("--run_timeout", type=int, default=7200)
+    ap.add_argument("--use_cache", action="store_true", default=False)
+    ap.add_argument("--cache_root", default="cache/llm_stability_remote")
+    ap.add_argument("--preload_cache_to_gpu", action="store_true", default=False)
+    ap.add_argument("--auto_batch", action="store_true", default=False)
+    ap.add_argument("--gpu_watch", action="store_true", default=True)
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -279,12 +307,13 @@ def main() -> None:
     env_report(out_dir)
 
     from tools.gpu_watch import GpuWatch
-    watch = GpuWatch(out_dir / "logs/gpu_monitor.csv", interval=30, threshold=30.0)
+    watch = GpuWatch(out_dir / "logs/gpu_monitor.csv", interval=30, threshold=30.0,
+                     idle_threshold=10.0, idle_seconds_limit=600)
     watch.start()
 
     results_path = out_dir / "results.csv"
     fields = ["timestamp", "seed", "split", "evidence", "config", "experiment", "batch_size",
-              "num_workers", "status", "gpu_avg_util", "s1_val_deg", "s2_val_deg", "s3_val_deg", "s3_delta",
+              "num_workers", "cache", "status", "gpu_avg_util", "s1_val_deg", "s2_val_deg", "s3_val_deg", "s3_delta",
               "delta_deg", "delta_top50", "delta_delta_pearson"]
     rows = []
     zero_by_key: dict[tuple[str, str, str], dict] = {}
@@ -322,9 +351,10 @@ def main() -> None:
     finally:
         gpu_summary = watch.stop()
         (out_dir / "gpu_summary.csv").write_text(
-            "samples,avg_gpu_util,max_memory_mib,warning,threshold\n"
+            "samples,avg_gpu_util,avg_memory_mib,max_memory_mib,idle_seconds,warning,threshold\n"
             f"{gpu_summary['samples']},{gpu_summary['avg_gpu_util']},"
-            f"{gpu_summary['max_memory_mib']},{gpu_summary['warning']},{gpu_summary['threshold']}\n",
+            f"{gpu_summary['avg_memory_mib']},{gpu_summary['max_memory_mib']},"
+            f"{gpu_summary['idle_seconds']},{gpu_summary['warning']},{gpu_summary['threshold']}\n",
             encoding="utf-8",
         )
 

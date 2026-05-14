@@ -15,10 +15,13 @@ QUERY = (
 
 
 class GpuWatch:
-    def __init__(self, out_csv: str | Path, interval: int = 30, threshold: float = 30.0):
+    def __init__(self, out_csv: str | Path, interval: int = 30, threshold: float = 30.0,
+                 idle_threshold: float = 10.0, idle_seconds_limit: int = 600):
         self.out_csv = Path(out_csv)
         self.interval = int(interval)
         self.threshold = float(threshold)
+        self.idle_threshold = float(idle_threshold)
+        self.idle_seconds_limit = int(idle_seconds_limit)
         self.proc: subprocess.Popen | None = None
 
     def start(self) -> None:
@@ -43,7 +46,7 @@ class GpuWatch:
                 self.proc.kill()
         if hasattr(self, "_fh"):
             self._fh.close()
-        return summarize_gpu_csv(self.out_csv, self.threshold)
+        return summarize_gpu_csv(self.out_csv, self.threshold, self.idle_threshold, self.interval, self.idle_seconds_limit)
 
 
 def _num(text: str) -> float | None:
@@ -54,7 +57,8 @@ def _num(text: str) -> float | None:
         return None
 
 
-def summarize_gpu_csv(path: str | Path, threshold: float = 30.0) -> dict:
+def summarize_gpu_csv(path: str | Path, threshold: float = 30.0, idle_threshold: float = 10.0,
+                      interval: int = 30, idle_seconds_limit: int = 600) -> dict:
     path = Path(path)
     vals, mems = [], []
     if path.exists():
@@ -67,17 +71,35 @@ def summarize_gpu_csv(path: str | Path, threshold: float = 30.0) -> dict:
                 if mem is not None:
                     mems.append(mem)
     avg = sum(vals) / len(vals) if vals else 0.0
+    avg_mem = sum(mems) / len(mems) if mems else 0.0
+    longest_idle_samples = 0
+    current_idle = 0
+    for val in vals:
+        if val < idle_threshold:
+            current_idle += 1
+            longest_idle_samples = max(longest_idle_samples, current_idle)
+        else:
+            current_idle = 0
+    idle_seconds = longest_idle_samples * int(interval)
     summary = {
         "samples": len(vals),
         "avg_gpu_util": round(avg, 3),
+        "avg_memory_mib": round(avg_mem, 3),
         "max_memory_mib": round(max(mems), 3) if mems else 0.0,
+        "idle_seconds": idle_seconds,
         "warning": avg < threshold if vals else True,
         "threshold": threshold,
     }
     warn_path = path.with_suffix(".warning.txt")
     if summary["warning"]:
         warn_path.write_text(
-            f"Average GPU utilization {avg:.2f}% below threshold {threshold:.2f}%\n",
+            f"Average GPU utilization {avg:.2f}% below threshold {threshold:.2f}%\n"
+            f"Longest idle window {idle_seconds}s below {idle_threshold:.2f}%\n",
+            encoding="utf-8",
+        )
+    if idle_seconds >= idle_seconds_limit:
+        path.with_suffix(".idle.txt").write_text(
+            f"GPU idle for {idle_seconds}s below {idle_threshold:.2f}%\n",
             encoding="utf-8",
         )
     return summary

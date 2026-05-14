@@ -30,6 +30,9 @@ def build_parser():
     pt.add_argument("--compile", action="store_true", default=False)
     pt.add_argument("--pin_memory", dest="pin_memory", action="store_true", default=None)
     pt.add_argument("--no_pin_memory", dest="pin_memory", action="store_false")
+    pt.add_argument("--use_cache", action="store_true", default=False)
+    pt.add_argument("--cache_dir", default=None)
+    pt.add_argument("--preload_cache_to_gpu", action="store_true", default=False)
 
     pi = sub.add_parser("infer", help="Counterfactual inference")
     pi.add_argument("--config", default="config/default.yaml")
@@ -121,7 +124,8 @@ def cmd_train(args):
     if args.target_latent: train_cfg["target_latent"] = args.target_latent
 
     # CLI overrides
-    for key in ("batch_size", "num_workers", "amp", "progress", "pin_memory", "compile"):
+    for key in ("batch_size", "num_workers", "amp", "progress", "pin_memory", "compile",
+                "use_cache", "cache_dir", "preload_cache_to_gpu"):
         v = getattr(args, key, None)
         if v is not None:
             train_cfg[key] = v
@@ -136,12 +140,23 @@ def cmd_train(args):
     from models.train import train_model, attach_target_latent
 
     data_cfg = cfg.get("data", {})
-    train_ds, val_ds = build_train_val_datasets(
-        args.h5ad,
-        data_cfg,
-        train_ratio=train_cfg.get("train_ratio", 0.9),
-        seed=train_cfg.get("seed", 42),
-    )
+    if train_cfg.get("use_cache"):
+        from models.cache import load_cached_train_val
+        cache_dir = train_cfg.get("cache_dir")
+        if not cache_dir:
+            raise ValueError("--use_cache requires --cache_dir or train.cache_dir")
+        train_ds, val_ds = load_cached_train_val(
+            cache_dir,
+            preload_to_gpu=train_cfg.get("preload_cache_to_gpu", False),
+            device=args.device,
+        )
+    else:
+        train_ds, val_ds = build_train_val_datasets(
+            args.h5ad,
+            data_cfg,
+            train_ratio=train_cfg.get("train_ratio", 0.9),
+            seed=train_cfg.get("seed", 42),
+        )
     dataset = train_ds
 
     # Stage 3 target latents are attached to train cells only.
@@ -156,6 +171,10 @@ def cmd_train(args):
     bs = train_cfg.get("batch_size", 128); nw = train_cfg.get("num_workers", 0)
     pm = train_cfg.get("pin_memory", False); pw = train_cfg.get("persistent_workers", False)
     pf = train_cfg.get("prefetch_factor", 2)
+    if train_cfg.get("preload_cache_to_gpu", False):
+        nw = 0
+        pm = False
+        pw = False
     train_loader = build_loader(train_ds, batch_size=bs, shuffle=True, num_workers=nw,
                                  pin_memory=pm, persistent_workers=pw, prefetch_factor=pf, drop_last=True)
     val_loader = build_loader(val_ds, batch_size=bs, shuffle=False, num_workers=nw,

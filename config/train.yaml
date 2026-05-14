@@ -52,3 +52,10 @@ train:
   empty_cache: false
   compile: true
   avoid_single_batch: true
+  use_cache: false
+  cache_dir: null
+  preload_cache_to_gpu: false
+  auto_batch: true
+  target_gpu_util: 70
+  drop_last: true
+  gpu_log_every_epoch: true
