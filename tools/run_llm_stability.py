@@ -265,6 +265,12 @@ def cache_train_count(cache_dir: Path | None) -> int | None:
 
 def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_name: str,
               cfg: dict, out_dir: Path, batch_size: int, workers: int) -> dict:
+    cfg = dict(cfg)
+    if split == "lowcell_5":
+        cfg["strength"] = min(cfg.get("strength", 0.15), 0.10)
+        cfg["dropout"] = max(cfg.get("dropout", 0.3), 0.5)
+        cfg["warm_start"] = max(cfg.get("warm_start", 5), 8)
+        cfg["warm_epochs"] = max(cfg.get("warm_epochs", 8), 10)
     exp = f"s{seed}_{split}_{evidence}_{config_name}"
     log = out_dir / "logs" / f"{exp}.summary.txt"
     config_path = out_dir / "configs" / f"{exp}.yaml"
@@ -389,6 +395,8 @@ def main() -> None:
                     h5ad = ensure_evidence(args, base, seed, split, evidence, out_dir)
                     audit_or_die(h5ad, out_dir)
                     for config_name, cfg in CONFIGS.items():
+                        if split == "lowcell_5" and config_name != "soft_contrastive":
+                            continue
                         if (seed, split, evidence, config_name) in completed:
                             continue
                         row = train_run(args, h5ad, seed, split, evidence, config_name, cfg,
