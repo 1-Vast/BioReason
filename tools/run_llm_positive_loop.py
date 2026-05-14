@@ -58,8 +58,7 @@ EXPERIMENTS = [
      "split_type": "heldout", "evidence_type": "local_struct"},
     {"name": "heldout_dataset_struct_llm", "h5ad": "dataset/processed/llm_heldout_dataset_struct_llm.h5ad",
      "split_type": "heldout", "evidence_type": "dataset_struct_llm"},
-    {"name": "heldout_dataset_hybrid_llm", "h5ad": "dataset/processed/llm_heldout_dataset_hybrid_llm.h5ad",
-     "split_type": "heldout", "evidence_type": "dataset_hybrid_llm"},
+    # hybrid_llm disabled — mainline uses struct_llm only
     # Low-cell 5
     {"name": "lowcell5_zero", "h5ad": "dataset/processed/llm_lowcell_5_zero.h5ad",
      "split_type": "lowcell", "evidence_type": "zero", "n_train": 5},

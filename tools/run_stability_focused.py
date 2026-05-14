@@ -11,7 +11,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 SEEDS = ["42", "123", "2024"]
 SPLITS = ["heldout", "lowcell_10", "lowcell_50"]
-EVIDENCE = ["zero", "struct_llm", "hybrid_llm"]
+EVIDENCE = ["zero", "struct_llm"]
 
 def write_config(path):
     path.write_text("""data:

@@ -42,13 +42,7 @@ EXPERIMENTS = [
         "config": CONFIG_DIR / "config_evi_fix.yaml",
         "evidence_mode": "gate_add",
     },
-    {
-        "name": "D_DATASET_HYBRID_LLM",
-        "desc": "LLM hybrid",
-        "h5ad": "dataset/processed/local_dataset_hybrid_llm_evi.h5ad",
-        "config": CONFIG_DIR / "config_evi_fix.yaml",
-        "evidence_mode": "gate_add",
-    },
+    # D_DATASET_HYBRID_LLM disabled — mainline uses struct_llm only
     {
         "name": "E_FILM",
         "desc": "LLM structured + film",
