@@ -176,7 +176,8 @@ def cmd_train(args):
         pm = False
         pw = False
     train_loader = build_loader(train_ds, batch_size=bs, shuffle=True, num_workers=nw,
-                                 pin_memory=pm, persistent_workers=pw, prefetch_factor=pf, drop_last=True)
+                                 pin_memory=pm, persistent_workers=pw, prefetch_factor=pf,
+                                 drop_last=train_cfg.get("drop_last", True))
     val_loader = build_loader(val_ds, batch_size=bs, shuffle=False, num_workers=nw,
                                pin_memory=pm, persistent_workers=False, prefetch_factor=pf)
 

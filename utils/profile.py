@@ -95,6 +95,8 @@ def profile_train_step(model, loader, loss_fn, optimizer, device, stage=1, batch
 
 def suggest_loader_settings(loader_stats, step_stats=None):
     """Suggest DataLoader settings based on profiling results."""
+    if not loader_stats.get("data_wait") or not loader_stats.get("h2d_time"):
+        return []
     suggestions = []
     avg_data = sum(loader_stats["data_wait"]) / len(loader_stats["data_wait"]) * 1000
     avg_h2d = sum(loader_stats["h2d_time"]) / len(loader_stats["h2d_time"]) * 1000
