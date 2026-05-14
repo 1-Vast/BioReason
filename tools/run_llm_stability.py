@@ -141,7 +141,7 @@ def write_config(path: Path, cfg: dict, out_dir: Path, batch_size: int, workers:
             "prefetch_factor": 8,
             "progress": True,
             "profile": True,
-            "compile": True,
+            "compile": False,
             "evi_warm": True,
             "evi_warm_epochs": cfg.get("warm_epochs", 8),
             "latent_only_bp": True,
@@ -297,7 +297,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
     for stage in (1, 2, 3):
         cmd = [sys.executable, "main.py", "train", "--h5ad", str(h5ad), "--config", str(config_path),
                "--stage", str(stage), "--save_dir", str(save_dir), "--device", "cuda",
-               "--batch_size", str(effective_batch), "--num_workers", str(workers), "--progress", "--profile", "--compile"]
+               "--batch_size", str(effective_batch), "--num_workers", str(workers), "--progress", "--profile"]
         if cache_dir:
             cmd += ["--use_cache", "--cache_dir", str(cache_dir)]
             if args.preload_cache_to_gpu:
@@ -326,7 +326,7 @@ def main() -> None:
     ap.add_argument("--processed_dir", default="dataset/processed")
     ap.add_argument("--prefix", default="remote_stable")
     ap.add_argument("--out_dir", default="output/remote_bench/LLM_positive")
-    ap.add_argument("--seeds", default="42,123,2024")
+    ap.add_argument("--seeds", default="42,123,7")
     ap.add_argument("--splits", default="heldout,lowcell_5,lowcell_10,lowcell_20,lowcell_50")
     ap.add_argument("--evidence", default="zero,struct_llm,hybrid_llm")
     ap.add_argument("--run_timeout", type=int, default=7200)
@@ -343,7 +343,7 @@ def main() -> None:
 
     from tools.gpu_watch import GpuWatch
     watch = GpuWatch(out_dir / "logs/gpu_monitor.csv", interval=30, threshold=30.0,
-                     idle_threshold=10.0, idle_seconds_limit=600)
+                     idle_threshold=10.0, idle_seconds_limit=20)
     watch.start()
 
     results_path = out_dir / "results.csv"
