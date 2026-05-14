@@ -604,9 +604,8 @@ def build_loader(dataset, batch_size=128, shuffle=True, num_workers=0,
                  pin_memory=False, persistent_workers=False, prefetch_factor=2,
                  drop_last=False, avoid_single_batch=True):
     if getattr(dataset, "preload_to_gpu", False):
-        num_workers = 0
-        pin_memory = False
-        persistent_workers = False
+        from .cache import CachedBatchLoader
+        return CachedBatchLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
     if avoid_single_batch and not drop_last and len(dataset) % batch_size == 1:
         logger.warning(f"avoid_single_batch: last batch would be size 1; forcing drop_last=True")
         drop_last = True

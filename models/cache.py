@@ -113,3 +113,66 @@ def load_cached_train_val(cache_dir: str | Path, preload_to_gpu: bool = False, d
     val_split = "val" if (Path(cache_dir) / "x_val.pt").exists() else "test"
     val = CachedPertDataset(cache_dir, val_split, preload_to_gpu=preload_to_gpu, device=device)
     return train, val
+
+
+class CachedBatchLoader:
+    """Vectorized GPU/CPU tensor batch loader for CachedPertDataset.
+
+    This bypasses per-sample ``__getitem__`` and default collate overhead. It is
+    intended for preloaded GPU caches, but works on CPU tensors too.
+    """
+
+    def __init__(self, dataset: CachedPertDataset, batch_size: int, shuffle: bool = True,
+                 drop_last: bool = False):
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.drop_last = bool(drop_last)
+
+    def __len__(self) -> int:
+        n = len(self.dataset)
+        if self.drop_last:
+            return n // self.batch_size
+        return (n + self.batch_size - 1) // self.batch_size
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+        self._batch_size = int(value)
+
+    def __iter__(self):
+        ds = self.dataset
+        n = len(ds)
+        device = ds.x.device
+        order = torch.randperm(n, device=device) if self.shuffle else torch.arange(n, device=device)
+        limit = (n // self.batch_size) * self.batch_size if self.drop_last else n
+        for start in range(0, limit, self.batch_size):
+            ix = order[start:start + self.batch_size]
+            if ix.numel() < self.batch_size and self.drop_last:
+                continue
+            pert = ds.pert[ix]
+            idx = ds.idx[ix]
+            target_latent = None
+            target_mask = torch.zeros(ix.numel(), dtype=torch.bool, device=device)
+            if ds.target_latents is not None:
+                target_mask = ds.target_latent_mask[ix]
+                target_latent = ds.target_latents[ix]
+            yield {
+                "x": ds.x[ix].float(),
+                "y": ds.y[ix].float(),
+                "target": ds.y[ix].float(),
+                "pert": pert,
+                "pert_str": [ds.id_to_pert.get(int(p.item()), str(int(p.item()))) for p in pert],
+                "cov": {k: v[ix] for k, v in ds.cov.items()},
+                "evidence": ds.evidence[ix].float(),
+                "evidence_conf": ds.evidence_conf[ix].float(),
+                "idx": idx,
+                "split": [ds.split] * ix.numel(),
+                "target_latent": target_latent,
+                "target_latent_mask": target_mask,
+                "perturbation_effect": ds.perturbation_effect[ix].float(),
+                "meta": [{"idx": int(i.item()), "source_idx": int(i.item()), "cache": True} for i in idx],
+            }
