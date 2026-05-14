@@ -122,7 +122,7 @@ def write_config(path: Path, cfg: dict, out_dir: Path, batch_size: int, workers:
             "num_workers": workers,
             "pin_memory": True,
             "persistent_workers": workers > 0,
-            "prefetch_factor": 4,
+            "prefetch_factor": 8,
             "progress": True,
             "profile": True,
             "compile": True,
@@ -288,7 +288,7 @@ def main() -> None:
               "delta_deg", "delta_top50", "delta_delta_pearson"]
     rows = []
     zero_by_key: dict[tuple[str, str, str], dict] = {}
-    batch_size, workers = 512, 6
+    batch_size, workers = 2048, 16
     try:
         for seed in [s.strip() for s in args.seeds.split(",") if s.strip()]:
             for split in [s.strip() for s in args.splits.split(",") if s.strip()]:
