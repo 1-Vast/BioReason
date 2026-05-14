@@ -187,10 +187,20 @@ def cmd_train(args):
         profile_model = BioReason(input_dim=dataset.input_dim, dim=cfg["model"].get("dim",256),
                        hidden=cfg["model"].get("hidden",512),
                        steps=cfg["model"].get("latent_steps",8),
-                       heads=cfg["model"].get("heads",4), dropout=0, pert_mode="id",
+                       heads=cfg["model"].get("heads",4), dropout=0,
+                       pert_mode=cfg["model"].get("pert_mode", "id"),
                        num_perts=dataset.n_perts, evidence_dim=dataset.evidence_dim,
                        reason_mode=cfg["model"].get("reason_mode", "transformer"),
-                       evidence_mode=cfg["model"].get("evidence_mode", "film")).to(args.device)
+                       evidence_mode=cfg["model"].get("evidence_mode", "film"),
+                       use_evidence_conf=cfg["model"].get("use_evidence_conf", True),
+                       pert_embed_strength=cfg["model"].get("pert_embed_strength", 1.0),
+                       evidence_strength=cfg["model"].get("evidence_strength", 0.2),
+                       evidence_pert_alpha=cfg["model"].get("evidence_pert_alpha", 0.0),
+                       use_evidence_as_pert_init=cfg["model"].get("use_evidence_as_pert_init", False),
+                       adaptive_evidence_gate=cfg["model"].get("adaptive_evidence_gate", False),
+                       evidence_gate_init_bias=cfg["model"].get("evidence_gate_init_bias", -2.5),
+                       evidence_delta_cap_ratio=cfg["model"].get("evidence_delta_cap_ratio", 0.1),
+                       use_evidence_reliability=cfg["model"].get("use_evidence_reliability", True)).to(args.device)
         step_stats = profile_train_step(
             profile_model,
             train_loader, BioLoss(cfg.get("loss",{})),
@@ -226,7 +236,15 @@ def cmd_train(args):
                        evidence_dim=evidence_dim, cov_dims=dict(dataset.cov_dims),
                        reason_mode=model_cfg.get("reason_mode", "transformer"),
                        evidence_mode=model_cfg.get("evidence_mode", "film"),
-                       use_evidence_conf=model_cfg.get("use_evidence_conf", True))
+                       use_evidence_conf=model_cfg.get("use_evidence_conf", True),
+                       pert_embed_strength=model_cfg.get("pert_embed_strength", 1.0),
+                       evidence_strength=model_cfg.get("evidence_strength", 0.2),
+                       evidence_pert_alpha=model_cfg.get("evidence_pert_alpha", 0.5),
+                       use_evidence_as_pert_init=model_cfg.get("use_evidence_as_pert_init", False),
+                       adaptive_evidence_gate=model_cfg.get("adaptive_evidence_gate", False),
+                       evidence_gate_init_bias=model_cfg.get("evidence_gate_init_bias", -1.5),
+                       evidence_delta_cap_ratio=model_cfg.get("evidence_delta_cap_ratio", 0.1),
+                       use_evidence_reliability=model_cfg.get("use_evidence_reliability", True))
     loss_fn = BioLoss(cfg.get("loss", {}))
     train_model(model, train_loader, val_loader, {**cfg, **train_cfg}, loss_fn=loss_fn)
 

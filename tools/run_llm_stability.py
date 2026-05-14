@@ -24,11 +24,14 @@ ROOT = Path.cwd()
 sys.path.insert(0, str(ROOT))
 
 CONFIGS = {
-    "best_previous": dict(strength=0.4, alpha=0.8, dropout=0.2, contrast=0.0, adaptive=True),
-    "contrastive": dict(strength=0.4, alpha=0.8, dropout=0.2, contrast=0.05, adaptive=True),
-    "adaptive_gate": dict(strength=0.4, alpha=0.8, dropout=0.2, contrast=0.0, adaptive=True),
-    "conservative": dict(strength=0.3, alpha=0.8, dropout=0.2, contrast=0.0, adaptive=True),
-    "strong_evidence": dict(strength=0.5, alpha=1.0, dropout=0.2, contrast=0.0, adaptive=True),
+    # Evidence is a conservative soft constraint only. The previous strong
+    # id_plus_evidence settings were unstable on seed 42 low-cell runs.
+    "soft_adaptive": dict(strength=0.15, alpha=0.0, dropout=0.3, contrast=0.05,
+                          adaptive=True, gate_bias=-2.5, warm_start=5, warm_epochs=8),
+    "soft_contrastive": dict(strength=0.15, alpha=0.0, dropout=0.3, contrast=0.10,
+                             adaptive=True, gate_bias=-2.5, warm_start=5, warm_epochs=8),
+    "soft_rank_lowcell": dict(strength=0.10, alpha=0.0, dropout=0.5, contrast=0.10,
+                              adaptive=True, gate_bias=-2.5, warm_start=8, warm_epochs=10),
 }
 
 
@@ -116,11 +119,13 @@ def write_config(path: Path, cfg: dict, out_dir: Path, batch_size: int, workers:
             "evidence_strength": cfg["strength"],
             "evidence_pert_alpha": cfg["alpha"],
             "evidence_dropout": cfg["dropout"],
-            "pert_mode": "id_plus_evidence",
-            "use_evidence_as_pert_init": True,
+            "pert_mode": "id",
+            "use_evidence_as_pert_init": False,
             "evidence_dim": 128,
             "adaptive_evidence_gate": cfg["adaptive"],
-            "evidence_gate_init_bias": -1.5,
+            "evidence_gate_init_bias": cfg.get("gate_bias", -2.5),
+            "evidence_delta_cap_ratio": 0.1,
+            "use_evidence_reliability": True,
         },
         "train": {
             "epochs": 20,
@@ -138,11 +143,12 @@ def write_config(path: Path, cfg: dict, out_dir: Path, batch_size: int, workers:
             "profile": True,
             "compile": True,
             "evi_warm": True,
-            "evi_warm_epochs": 6,
+            "evi_warm_epochs": cfg.get("warm_epochs", 8),
             "latent_only_bp": True,
             "use_evidence_policy": "quality_gate",
             "min_evidence_conf_train": 0.35,
-            "evidence_warm_start_epoch": 2,
+            "evidence_warm_start_epoch": cfg.get("warm_start", 5),
+            "log_every": 50,
             "stage3_init": "stage1",
             "stage1_ckpt": str(out_dir / "tmp_run/shared/stage1/model.pt"),
             "stage2_ckpt": str(out_dir / "tmp_run/shared/stage2/model.pt"),
@@ -319,7 +325,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--processed_dir", default="dataset/processed")
     ap.add_argument("--prefix", default="remote_stable")
-    ap.add_argument("--out_dir", default="output/llm_stability_remote")
+    ap.add_argument("--out_dir", default="output/remote_bench/LLM_positive")
     ap.add_argument("--seeds", default="42,123,2024")
     ap.add_argument("--splits", default="heldout,lowcell_5,lowcell_10,lowcell_20,lowcell_50")
     ap.add_argument("--evidence", default="zero,struct_llm,hybrid_llm")
@@ -346,6 +352,8 @@ def main() -> None:
               "s1_val_deg", "s2_val_deg", "s3_val_deg", "s3_delta",
               "s1_cells_per_sec", "s2_cells_per_sec", "s3_cells_per_sec",
               "s1_data_wait", "s2_data_wait", "s3_data_wait",
+              "s1_evi_gate_mean", "s2_evi_gate_mean", "s3_evi_gate_mean",
+              "s1_evi_reliability", "s2_evi_reliability", "s3_evi_reliability",
               "delta_deg", "delta_top50", "delta_delta_pearson"]
     rows = []
     zero_by_key: dict[tuple[str, str, str], dict] = {}

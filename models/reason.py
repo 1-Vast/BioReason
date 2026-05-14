@@ -52,12 +52,16 @@ class EvidenceGate(nn.Module):
     """
 
     def __init__(self, dim, dropout=0.1, mode="film", use_conf=True,
-                 adaptive=False, evidence_gate_init_bias=-1.5):
+                 adaptive=False, evidence_gate_init_bias=-1.5,
+                 evidence_delta_cap_ratio=0.1, use_reliability=True):
         super().__init__()
         self.mode = mode
         self.use_conf = use_conf
         self.adaptive = adaptive
+        self.evidence_delta_cap_ratio = evidence_delta_cap_ratio
+        self.use_reliability = use_reliability
         self._last_gate = None
+        self._last_reliability = None
         if mode == "film":
             self.gate = nn.Sequential(
                 nn.Linear(dim, dim), nn.GELU(), nn.Dropout(dropout),
@@ -82,6 +86,9 @@ class EvidenceGate(nn.Module):
             if adaptive:
                 self.adapt_proj = nn.Linear(dim * 2 + 1, 1)
                 nn.init.constant_(self.adapt_proj.bias, evidence_gate_init_bias)
+            if use_reliability:
+                self.reliability_proj = nn.Linear(dim * 2 + 1, 1)
+                nn.init.constant_(self.reliability_proj.bias, evidence_gate_init_bias)
         else:
             raise ValueError(f"Unsupported evidence mode: {mode}")
         if use_conf:
@@ -93,6 +100,7 @@ class EvidenceGate(nn.Module):
                 evidence_conf=None):
         if evidence is None:
             self._last_gate = None
+            self._last_reliability = None
             return (z, None) if return_score else z
         if self.mode == "film":
             gamma, beta = self.gate(evidence).chunk(2, dim=-1)
@@ -134,11 +142,21 @@ class EvidenceGate(nn.Module):
                 ev_conf_vec = evidence_conf.view(-1, 1) if evidence_conf is not None else torch.ones(z.size(0), 1, device=z.device)
                 adapt_factor = torch.sigmoid(self.adapt_proj(torch.cat([z, evidence, ev_conf_vec], -1)))
                 gate = gate * adapt_factor
+            if self.use_reliability and hasattr(self, 'reliability_proj'):
+                ev_conf_vec = evidence_conf.view(-1, 1) if evidence_conf is not None else torch.ones(z.size(0), 1, device=z.device)
+                reliability = torch.sigmoid(self.reliability_proj(torch.cat([z, evidence, ev_conf_vec], -1)))
+                gate = gate * reliability
+                self._last_reliability = reliability
+            else:
+                self._last_reliability = None
             if evidence_conf is not None:
                 conf = evidence_conf.unsqueeze(-1) if evidence_conf.dim() <= 1 else evidence_conf
                 gate = gate * conf
             self._last_gate = gate  # store for diagnostics
             delta_e = self.delta_proj(e_proj)  # [B, dim]
+            cap = z.detach().norm(dim=-1, keepdim=True).clamp_min(1e-6) * self.evidence_delta_cap_ratio
+            scale = (cap / delta_e.norm(dim=-1, keepdim=True).clamp_min(1e-6)).clamp(max=1.0)
+            delta_e = delta_e * scale
             z = z + gate * delta_e
             trust = torch.ones(z.size(0), 1, device=z.device) if return_score else None
         return (z, trust) if return_score else z
@@ -154,7 +172,8 @@ class Reasoner(nn.Module):
     def __init__(self, dim, steps=8, hidden=None, heads=4, dropout=0.1,
                  evidence_mode="film", reason_mode="transformer",
                  use_evidence_conf=True, adaptive_evidence_gate=False,
-                 evidence_gate_init_bias=-1.5):
+                 evidence_gate_init_bias=-1.5, evidence_delta_cap_ratio=0.1,
+                 use_evidence_reliability=True):
         super().__init__()
         self.dim = dim
         self.steps = steps
@@ -168,7 +187,9 @@ class Reasoner(nn.Module):
             for _ in range(steps)
         ])
         self.evidence_gate = EvidenceGate(dim, dropout=dropout, mode=evidence_mode, use_conf=use_evidence_conf,
-                                          adaptive=adaptive_evidence_gate, evidence_gate_init_bias=evidence_gate_init_bias)
+                                          adaptive=adaptive_evidence_gate, evidence_gate_init_bias=evidence_gate_init_bias,
+                                          evidence_delta_cap_ratio=evidence_delta_cap_ratio,
+                                          use_reliability=use_evidence_reliability)
         self.out_proj = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim))
 
     def forward(self, cell_emb, pert_emb, cov_emb=None, evidence=None, return_trust=False,
@@ -221,7 +242,8 @@ class BioReason(nn.Module):
                  use_evidence_conf=True, pert_embed_strength=1.0,
                  evidence_strength=0.2, evidence_pert_alpha=0.5,
                  use_evidence_as_pert_init=False,
-                 adaptive_evidence_gate=False, evidence_gate_init_bias=-1.5):
+                 adaptive_evidence_gate=False, evidence_gate_init_bias=-1.5,
+                 evidence_delta_cap_ratio=0.1, use_evidence_reliability=True):
         super().__init__()
         self.input_dim = input_dim
         self.dim = dim
@@ -232,12 +254,14 @@ class BioReason(nn.Module):
         self.evidence_strength = evidence_strength
         self.evidence_pert_alpha = evidence_pert_alpha
         self.use_evidence_as_pert_init = use_evidence_as_pert_init
+        self.evidence_delta_cap_ratio = evidence_delta_cap_ratio
 
         self.cell_encoder = CellEncoder(input_dim, dim, hidden=hidden, dropout=dropout)
         self.pert_encoder = PertEncoder(num_perts, dim, hidden=hidden,
                                          pert_mode=pert_mode, pert_agg=pert_agg,
                                          dropout=dropout, evidence_dim=evidence_dim,
-                                         evidence_pert_alpha=evidence_pert_alpha)
+                                         evidence_pert_alpha=evidence_pert_alpha,
+                                         evidence_delta_cap_ratio=evidence_delta_cap_ratio)
         self.cov_encoder = CovEncoder(cov_dims or {}, dim, dropout=dropout)
 
         # Evidence encoder: only if evidence_dim is set
@@ -256,7 +280,9 @@ class BioReason(nn.Module):
                                     reason_mode=reason_mode,
                                     use_evidence_conf=use_evidence_conf,
                                     adaptive_evidence_gate=adaptive_evidence_gate,
-                                    evidence_gate_init_bias=evidence_gate_init_bias)
+                                    evidence_gate_init_bias=evidence_gate_init_bias,
+                                    evidence_delta_cap_ratio=evidence_delta_cap_ratio,
+                                    use_evidence_reliability=use_evidence_reliability)
         self.decoder = ExprDecoder(dim, input_dim, hidden=hidden, dropout=dropout)
 
         # Evidence prediction head: only if evidence_dim is set
@@ -306,6 +332,7 @@ class BioReason(nn.Module):
 
         # Evidence gate for diagnostics
         evidence_gate = getattr(self.reasoner.evidence_gate, '_last_gate', None)
+        evidence_reliability = getattr(self.reasoner.evidence_gate, '_last_reliability', None)
 
         return {
             "pred": pred,
@@ -314,6 +341,7 @@ class BioReason(nn.Module):
             "evidence_pred": evidence_pred,
             "evidence_emb": evidence_emb,  # encoded evidence before reasoner
             "evidence_gate": evidence_gate,
+            "evidence_reliability": evidence_reliability,
             "target_latent": target_latent,
             "trust": trust,
         }

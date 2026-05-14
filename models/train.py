@@ -91,9 +91,12 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
                  "evi_gain", "z_shift", "evi_rec", "latent_align", "latent_only",
                  "evi_contrast"]
     loss_sum = {k: 0.0 for k in loss_keys}
-    gate_sum = 0.0
-    gate_sq_sum = 0.0
-    gate_count = 0.0
+    gate_sum = None
+    gate_sq_sum = None
+    gate_count = 0
+    rel_sum = None
+    rel_sq_sum = None
+    rel_count = 0
     n_samples = 0
     t_data = 0.0
     t_step_start = time.perf_counter()
@@ -239,13 +242,20 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
             optimizer_step(L["loss"])
 
         n_samples += b["x"].size(0)
-        # Track evidence gate stats
+        # Track evidence gate stats without forcing a CPU sync each step.
         if evidence is not None:
             gate_val = getattr(model.reasoner.evidence_gate, '_last_gate', None)
             if gate_val is not None:
-                gate_sum += gate_val.detach().sum().item()
-                gate_sq_sum += (gate_val.detach() ** 2).sum().item()
+                gate_det = gate_val.detach()
+                gate_sum = gate_det.sum() if gate_sum is None else gate_sum + gate_det.sum()
+                gate_sq_sum = (gate_det ** 2).sum() if gate_sq_sum is None else gate_sq_sum + (gate_det ** 2).sum()
                 gate_count += gate_val.numel()
+            rel_val = getattr(model.reasoner.evidence_gate, '_last_reliability', None)
+            if rel_val is not None:
+                rel_det = rel_val.detach()
+                rel_sum = rel_det.sum() if rel_sum is None else rel_sum + rel_det.sum()
+                rel_sq_sum = (rel_det ** 2).sum() if rel_sq_sum is None else rel_sq_sum + (rel_det ** 2).sum()
+                rel_count += rel_val.numel()
         for k in loss_sum:
             v = L.get(k)
             if isinstance(v, torch.Tensor) and v.numel() > 0:
@@ -258,11 +268,18 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
             avg_loss = float(avg_loss_v.item()) if isinstance(avg_loss_v, torch.Tensor) else avg_loss_v
             extra = {"mem": f"{gpu_mem_gb():.1f}GB"}
             if gate_count > 0:
-                gate_mean = gate_sum / gate_count
-                gate_std = (gate_sq_sum / gate_count - gate_mean ** 2) ** 0.5
+                gate_mean = float((gate_sum / gate_count).item())
+                gate_std = float((gate_sq_sum / gate_count - gate_mean ** 2).clamp_min(0).sqrt().item())
                 extra.update({
                     "gate_m": short_float(gate_mean),
                     "gate_s": short_float(gate_std),
+                })
+            if rel_count > 0:
+                rel_mean = float((rel_sum / rel_count).item())
+                rel_std = float((rel_sq_sum / rel_count - rel_mean ** 2).clamp_min(0).sqrt().item())
+                extra.update({
+                    "rel_m": short_float(rel_mean),
+                    "rel_s": short_float(rel_std),
                 })
             if warm_active and evi_log:
                 extra.update({
@@ -286,6 +303,14 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
         stats[k] = float(avg.item()) if isinstance(avg, torch.Tensor) else avg
     stats["data_time"] = t_data
     stats["samples"] = n_samples
+    if gate_count > 0:
+        gate_mean = float((gate_sum / gate_count).item())
+        stats["evi_gate_mean"] = gate_mean
+        stats["evi_gate_std"] = float((gate_sq_sum / gate_count - gate_mean ** 2).clamp_min(0).sqrt().item())
+    if rel_count > 0:
+        rel_mean = float((rel_sum / rel_count).item())
+        stats["evi_reliability"] = rel_mean
+        stats["evi_reliability_std"] = float((rel_sq_sum / rel_count - rel_mean ** 2).clamp_min(0).sqrt().item())
     return stats
 
 

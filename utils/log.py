@@ -34,7 +34,8 @@ def format_loss(loss_dict, prefix=""):
     """Format only key training signals."""
     parts = []
     for k in ["loss", "deg", "latent", "evidence", "evi_gain", "z_shift",
-              "evi_rec", "latent_align", "mmd"]:
+              "evi_rec", "latent_align", "mmd", "evi_gate_mean",
+              "evi_reliability"]:
         v = loss_dict.get(k)
         if v is not None and abs(v) > 1e-10:
             parts.append(f"{prefix}{k}={short_float(v)}")

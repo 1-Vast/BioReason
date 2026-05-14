@@ -74,7 +74,15 @@ def main() -> None:
                       num_perts=train_ds.n_perts, evidence_dim=train_ds.evidence_dim,
                       cov_dims=dict(train_ds.cov_dims), reason_mode=model_cfg.get("reason_mode", "transformer"),
                       evidence_mode=model_cfg.get("evidence_mode", "gate_add"),
-                      use_evidence_conf=model_cfg.get("use_evidence_conf", True)).to(device)
+                      use_evidence_conf=model_cfg.get("use_evidence_conf", True),
+                      pert_embed_strength=model_cfg.get("pert_embed_strength", 1.0),
+                      evidence_strength=model_cfg.get("evidence_strength", 0.2),
+                      evidence_pert_alpha=model_cfg.get("evidence_pert_alpha", 0.5),
+                      use_evidence_as_pert_init=model_cfg.get("use_evidence_as_pert_init", False),
+                      adaptive_evidence_gate=model_cfg.get("adaptive_evidence_gate", False),
+                      evidence_gate_init_bias=model_cfg.get("evidence_gate_init_bias", -1.5),
+                      evidence_delta_cap_ratio=model_cfg.get("evidence_delta_cap_ratio", 0.1),
+                      use_evidence_reliability=model_cfg.get("use_evidence_reliability", True)).to(device)
     loss_fn = BioLoss(cfg.get("loss", {}))
     opt = torch.optim.AdamW(model.parameters(), lr=train_cfg.get("lr", 5e-4))
     scaler = get_scaler(device, train_cfg.get("amp", True))

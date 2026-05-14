@@ -27,12 +27,14 @@ class PertEncoder(nn.Module):
     """
 
     def __init__(self, num_perts, dim, hidden=None, pert_mode="id", pert_agg="mean",
-                 dropout=0.1, evidence_dim=None, evidence_pert_alpha=0.5):
+                 dropout=0.1, evidence_dim=None, evidence_pert_alpha=0.5,
+                 evidence_delta_cap_ratio=0.1):
         super().__init__()
         self.pert_mode = pert_mode
         self.pert_agg = pert_agg
         self.dim = dim
         self.evidence_pert_alpha = evidence_pert_alpha
+        self.evidence_delta_cap_ratio = evidence_delta_cap_ratio
 
         if pert_mode in ("id", "id_plus_evidence", "multihot"):
             self.embed = nn.Embedding(num_perts, dim, padding_idx=-1)
@@ -66,6 +68,9 @@ class PertEncoder(nn.Module):
             pert_id_emb = self.embed(pert)
             if evidence_emb is not None:
                 evidence_pert = self.evidence_to_pert(evidence_emb)
+                cap = pert_id_emb.detach().norm(dim=-1, keepdim=True).clamp_min(1e-6) * self.evidence_delta_cap_ratio
+                scale = (cap / evidence_pert.norm(dim=-1, keepdim=True).clamp_min(1e-6)).clamp(max=1.0)
+                evidence_pert = evidence_pert * scale
                 x = pert_id_emb + self.evidence_pert_alpha * evidence_pert
             else:
                 x = pert_id_emb
