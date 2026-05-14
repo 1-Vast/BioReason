@@ -13,11 +13,15 @@ model:
   reason_mode: "transformer"     # transformer | mlp
   evidence_mode: "gate_add"      # gate_add | film | add | cross
   residual: true
-  evidence_strength: 0.2
+  evidence_strength: 0.4
   pert_embed_strength: 1.0
 
   # perturbation
-  pert_mode: "id"
+  pert_mode: "id_plus_evidence"
   pert_agg: "mean"
-  evidence_dim: null
+  evidence_dim: 128
   use_evidence_conf: true
+  use_evidence_as_pert_init: true
+  evidence_pert_alpha: 0.8
+  adaptive_evidence_gate: true
+  evidence_gate_init_bias: -1.5

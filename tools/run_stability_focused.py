@@ -51,17 +51,21 @@ model:
 
 train:
   epochs: 8
-  batch_size: 64
+  batch_size: 256
   lr: 0.0005
   weight_decay: 0.0001
-  amp: false
+  amp: true
   grad_clip: 1.0
   device: "cuda"
   save_dir: "output/llm_stability/tmp_run"
-  num_workers: 0
+  num_workers: 4
   pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
   non_blocking: true
   progress: true
+  profile: true
+  compile: true
   evi_warm: true
   evi_warm_epochs: 3
   evi_warm_margin: 0.02
@@ -102,8 +106,8 @@ def train_stage(name, stage, h5ad_path, config_path):
     cmd = (
         f'conda run -n DL python "D:/BioReason/main.py" train '
         f'--h5ad "{h5ad_path}" --config "{config_path}" '
-        f'--stage {stage} --batch_size 64 '
-        f'--save_dir "{save}" --device cuda --no_amp --num_workers 0 --progress '
+        f'--stage {stage} --batch_size 256 '
+        f'--save_dir "{save}" --device cuda --amp --num_workers 4 --progress --compile '
         f'{tl}'
     )
     ok, out, err = run_cmd(cmd, timeout=900)

@@ -109,6 +109,7 @@ def write_config(path: Path, cfg: dict, out_dir: Path, batch_size: int, workers:
             "use_evidence_as_pert_init": True,
             "evidence_dim": 128,
             "adaptive_evidence_gate": cfg["adaptive"],
+            "evidence_gate_init_bias": -1.5,
         },
         "train": {
             "epochs": 20,
@@ -124,6 +125,7 @@ def write_config(path: Path, cfg: dict, out_dir: Path, batch_size: int, workers:
             "prefetch_factor": 4,
             "progress": True,
             "profile": True,
+            "compile": True,
             "evi_warm": True,
             "evi_warm_epochs": 6,
             "latent_only_bp": True,
@@ -241,7 +243,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
     for stage in (1, 2, 3):
         cmd = [sys.executable, "main.py", "train", "--h5ad", str(h5ad), "--config", str(config_path),
                "--stage", str(stage), "--save_dir", str(save_dir), "--device", "cuda",
-               "--batch_size", str(batch_size), "--num_workers", str(workers), "--progress", "--profile"]
+               "--batch_size", str(batch_size), "--num_workers", str(workers), "--progress", "--profile", "--compile"]
         if stage == 3 and (shared / "stage2/target_latent.pt").exists():
             cmd += ["--target_latent", str(shared / "stage2/target_latent.pt")]
         ok, text = run(cmd, log, args.run_timeout)
