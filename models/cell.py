@@ -45,9 +45,17 @@ class CovEncoder(nn.Module):
 
     def forward(self, cov):
         """cov: dict[str, LongTensor[B]] -> [B, dim] or None"""
-        if not cov:
+        if not cov or not self.embeddings:
             return None
-        embs = [self.embeddings[key](cov[key]) for key in cov if key in self.embeddings]
+        embs = []
+        for key in self.embeddings.keys():
+            if key in cov:
+                embs.append(self.embeddings[key](cov[key]))
+            else:
+                # Missing covariate: use index 0 ("unknown"), matching batch size
+                B = list(cov.values())[0].shape[0]
+                dev = list(cov.values())[0].device
+                embs.append(self.embeddings[key](torch.zeros(B, dtype=torch.long, device=dev)))
         if not embs:
             return None
         x = torch.cat(embs, dim=-1)

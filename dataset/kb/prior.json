@@ -1,13 +1,101 @@
 {
   "TP53_KO": {
-    "description": "TP53 knockout disrupts DNA damage response and cell-cycle checkpoint.",
+    "description": "TP53 knockout disrupts DNA damage response, cell cycle checkpoint, and apoptosis regulation. Loss of p53 leads to genomic instability, reduced CDKN1A (p21) expression, and failure to arrest cell cycle after DNA damage.",
     "confidence_score": 0.95,
     "source": "local",
     "pathway_impact": [
       {"pathway": "DNA damage response", "direction": "down", "confidence": 0.95},
-      {"pathway": "cell cycle checkpoint", "direction": "down", "confidence": 0.90}
+      {"pathway": "Cell cycle arrest", "direction": "down", "confidence": 0.90},
+      {"pathway": "Apoptosis", "direction": "down", "confidence": 0.90},
+      {"pathway": "Senescence", "direction": "down", "confidence": 0.85}
     ],
-    "tf_activity": [{"tf": "TP53", "direction": "down"}],
-    "marker_genes": [{"gene": "CDKN1A", "direction": "down"}, {"gene": "BAX", "direction": "down"}]
+    "tf_activity": [
+      {"tf": "TP53", "direction": "down"},
+      {"tf": "E2F1", "direction": "up"},
+      {"tf": "MYC", "direction": "up"}
+    ],
+    "marker_genes": [
+      {"gene": "CDKN1A", "direction": "down"},
+      {"gene": "BBC3", "direction": "down"},
+      {"gene": "BAX", "direction": "down"},
+      {"gene": "MDM2", "direction": "down"},
+      {"gene": "GADD45A", "direction": "down"},
+      {"gene": "CCNB1", "direction": "up"},
+      {"gene": "CCNE1", "direction": "up"}
+    ]
+  },
+  "MYC_KO": {
+    "description": "MYC knockout reduces cell proliferation, ribosomal biogenesis, and metabolic activity. MYC is a master transcription factor driving growth-related gene expression programs.",
+    "confidence_score": 0.90,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "Cell proliferation", "direction": "down", "confidence": 0.90},
+      {"pathway": "Ribosome biogenesis", "direction": "down", "confidence": 0.85},
+      {"pathway": "Glycolysis", "direction": "down", "confidence": 0.80},
+      {"pathway": "Nucleotide synthesis", "direction": "down", "confidence": 0.85}
+    ],
+    "tf_activity": [
+      {"tf": "MYC", "direction": "down"},
+      {"tf": "E2F1", "direction": "down"},
+      {"tf": "MAX", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "NPM1", "direction": "down"},
+      {"gene": "ODC1", "direction": "down"},
+      {"gene": "LDHA", "direction": "down"},
+      {"gene": "CAD", "direction": "down"},
+      {"gene": "CCND2", "direction": "down"},
+      {"gene": "CDKN1B", "direction": "up"}
+    ]
+  },
+  "STAT1_KO": {
+    "description": "STAT1 knockout impairs JAK-STAT interferon signaling, reducing antiviral and immune response genes. Loss of STAT1 weakens type I and type II interferon responses.",
+    "confidence_score": 0.88,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "Interferon alpha/beta signaling", "direction": "down", "confidence": 0.90},
+      {"pathway": "Interferon gamma signaling", "direction": "down", "confidence": 0.90},
+      {"pathway": "Antiviral response", "direction": "down", "confidence": 0.85},
+      {"pathway": "Antigen presentation", "direction": "down", "confidence": 0.80}
+    ],
+    "tf_activity": [
+      {"tf": "STAT1", "direction": "down"},
+      {"tf": "IRF1", "direction": "down"},
+      {"tf": "IRF9", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "IRF1", "direction": "down"},
+      {"gene": "MX1", "direction": "down"},
+      {"gene": "OAS1", "direction": "down"},
+      {"gene": "ISG15", "direction": "down"},
+      {"gene": "STAT2", "direction": "down"},
+      {"gene": "IFIT1", "direction": "down"},
+      {"gene": "HLA-A", "direction": "down"}
+    ]
+  },
+  "EGFR_KO": {
+    "description": "EGFR knockout reduces MAPK/ERK and PI3K/AKT signaling, impairing cell growth, survival, and migration. EGFR is a receptor tyrosine kinase driving proliferation and differentiation.",
+    "confidence_score": 0.85,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "MAPK/ERK signaling", "direction": "down", "confidence": 0.88},
+      {"pathway": "PI3K/AKT signaling", "direction": "down", "confidence": 0.85},
+      {"pathway": "Cell migration", "direction": "down", "confidence": 0.80},
+      {"pathway": "Differentiation", "direction": "down", "confidence": 0.75}
+    ],
+    "tf_activity": [
+      {"tf": "FOS", "direction": "down"},
+      {"tf": "JUN", "direction": "down"},
+      {"tf": "ELK1", "direction": "down"},
+      {"tf": "STAT3", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "FOS", "direction": "down"},
+      {"gene": "DUSP6", "direction": "down"},
+      {"gene": "EGR1", "direction": "down"},
+      {"gene": "CCND1", "direction": "down"},
+      {"gene": "SPRY2", "direction": "down"},
+      {"gene": "ETV5", "direction": "down"}
+    ]
   }
 }

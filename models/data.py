@@ -1,4 +1,6 @@
-"""Single-cell perturbation data loading — sparse-safe.
+import logging
+logger = logging.getLogger(__name__)
+"""Single-cell perturbation data loading - sparse-safe.
 
 Key design:
   - AnnData.X kept sparse; densify only row-wise or batch-wise.
@@ -16,7 +18,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ── Sparse helpers ───────────────────────────────────────────────
+# Sparse helpers
 
 def _issparse(X):
     from scipy.sparse import issparse
@@ -94,7 +96,7 @@ def align_adata_to_genes(adata, target_genes, sparse_output=True):
     return result
 
 
-# ── Collate ──────────────────────────────────────────────────────
+# Collate
 
 def bio_collate_fn(batch):
     keys = batch[0].keys()
@@ -119,17 +121,25 @@ def bio_collate_fn(batch):
     return collated
 
 
-# ── Dataset ──────────────────────────────────────────────────────
+# Dataset
 
 class PertDataset(Dataset):
-    """Single-cell perturbation dataset. Keeps X sparse; densify per-row."""
+    """Single-cell perturbation dataset. Keeps X sparse; densify per-row.
+
+    split-aware: when split is set, only cells of that split are returned.
+    group_means always computed from stats_split (default "train") only.
+    """
 
     def __init__(self, adata, label_key="perturbation", control_label="control",
                  cell_type_key="cell_type", dose_key="dose", time_key="time",
                  batch_key="batch", evidence_key="evidence",
                  target_mode="group_mean", pair_by=None,
                  use_control_as_input=True, use_hvg=True, n_hvg=2000,
-                 cache_group_means=True):
+                 cache_group_means=True,
+                 split=None,                   # "train" | "val" | "test" | None (all)
+                 stats_split="train",          # which split to compute group_means from
+                 control_input_mode="control_mean",  # "control_mean" | "random_control" | "matched_control"
+                 warn_on_missing_stats=True):
         super().__init__()
         self.label_key = label_key
         self.control_label = control_label
@@ -141,6 +151,8 @@ class PertDataset(Dataset):
         self.target_mode = target_mode
         self.pair_by = pair_by
         self.use_control_as_input = use_control_as_input
+        self.split = split
+        self.stats_split = stats_split
 
         # Gene names
         self.var_names = list(adata.var_names)
@@ -154,41 +166,69 @@ class PertDataset(Dataset):
             self.selected_var_names = list(adata.var_names)
 
         self.adata = adata
-        # Keep X sparse — never densify full matrix
         self.X = adata.X
+        # CSC→CSR for fast row access (CSC row slicing is O(n_cols) per row)
+        if _issparse(self.X):
+            from scipy.sparse import csc_matrix
+            if isinstance(self.X, csc_matrix):
+                self.X = self.X.tocsr()
         self.is_sparse = _issparse(self.X)
         self.input_dim = adata.n_vars
-        self.n_obs = len(adata)
+        self.source_indices = np.asarray(
+            adata.obs["_source_idx"].values if "_source_idx" in adata.obs else np.arange(adata.n_obs),
+            dtype=np.int64,
+        )
 
-        # Perturbation vocab
+        # Split filtering
         pert_arr = adata.obs[label_key].astype(str).values
+
+        if "split" in adata.obs and split is not None:
+            split_mask = (adata.obs["split"].values == split)
+            self.obs_indices = np.where(split_mask)[0].tolist()
+        else:
+            self.obs_indices = list(range(adata.n_obs))
+
+        self.n_obs = len(self.obs_indices)
+
+        # Stats indices: which cells to compute group_means from
+        if "split" in adata.obs and stats_split is not None:
+            stats_mask = (adata.obs["split"].values == stats_split)
+            self.stats_indices = np.where(stats_mask)[0].tolist()
+            self.train_indices = np.where(adata.obs["split"].values == "train")[0].tolist()
+        else:
+            self.stats_indices = list(range(adata.n_obs))
+            self.train_indices = list(range(adata.n_obs))
+
+        # Perturbation vocab (from all cells in adata)
         self.pert_cats = sorted(set(pert_arr))
         self.pert_to_id = {p: i for i, p in enumerate(self.pert_cats)}
         self.id_to_pert = {i: p for p, i in self.pert_to_id.items()}
         self.n_perts = len(self.pert_cats)
-        self.is_control = (pert_arr == control_label)
-        self.control_indices = np.where(self.is_control)[0].tolist()
-        self.obs_indices = list(range(self.n_obs))
 
-        # Group indices
+        # is_control and control_indices: from stats split only
+        self.is_control = (pert_arr == control_label)
+        stats_ctrl = [i for i in self.stats_indices if self.is_control[i]]
+        self.control_indices = stats_ctrl if stats_ctrl else np.where(self.is_control)[0].tolist()
+
+        # Group indices: only from stats_split
         self.group_indices = {}
         for p in self.pert_cats:
-            idx = np.where(pert_arr == p)[0]
+            idx = [i for i in self.stats_indices if pert_arr[i] == p]
             if len(idx) > 0:
-                self.group_indices[p] = idx.tolist()
+                self.group_indices[p] = idx
 
         self.cell_type_group_indices = {}
         if cell_type_key and cell_type_key in adata.obs:
             ct_arr = adata.obs[cell_type_key].astype(str).values
             for p in self.pert_cats:
-                p_idx = np.where(pert_arr == p)[0]
+                p_idx = [i for i in self.stats_indices if pert_arr[i] == p]
                 if len(p_idx) == 0: continue
                 ct_in_group = ct_arr[p_idx]
                 for ct in set(ct_in_group):
                     key = (p, ct)
-                    idx = p_idx[ct_in_group == ct]
+                    idx = [p_idx[j] for j in range(len(p_idx)) if ct_in_group[j] == ct]
                     if len(idx) > 0:
-                        self.cell_type_group_indices[key] = idx.tolist()
+                        self.cell_type_group_indices[key] = idx
 
         # Evidence dim
         self.evidence_dim = None
@@ -196,17 +236,46 @@ class PertDataset(Dataset):
             ev = adata.obsm[evidence_key]
             self.evidence_dim = ev.shape[1] if ev.ndim == 2 else 1
 
-        # Evidence confidence defaults to 1.0 when evidence exists but no obs field is present.
         self.has_evidence_conf = "evidence_conf" in adata.obs
 
-        # Group means (sparse-safe)
+        # Group means: from stats_split only
         self.cache_group_means = cache_group_means
+        self.group_means_source = stats_split if stats_split else "all"
+        self.control_input_mode = control_input_mode
+        
+        # Compute train-only control_mean and cell_type-matched control_means
+        self.control_mean = None
+        self.control_mean_by_ct = {}
+        if "split" in adata.obs and stats_split is not None:
+            train_mask = adata.obs["split"].values == stats_split
+            train_ctrl_mask = train_mask & (pert_arr == control_label)
+            if train_ctrl_mask.any():
+                ctrl_indices = np.where(train_ctrl_mask)[0].tolist()
+                self.control_mean = self._mean_rows(ctrl_indices)
+                # Cell-type matched control means
+                if cell_type_key and cell_type_key in adata.obs:
+                    ct_arr = adata.obs[cell_type_key].astype(str).values
+                    for ct in set(ct_arr[train_ctrl_mask]):
+                        ct_ctrl_idx = [i for i in ctrl_indices if ct_arr[i] == ct]
+                        if ct_ctrl_idx:
+                            self.control_mean_by_ct[ct] = self._mean_rows(ct_ctrl_idx)
+            else:
+                if warn_on_missing_stats:
+                    logger.warning("No train control cells found for control_mean computation")
+        else:
+            if warn_on_missing_stats:
+                logger.warning("No split info; control_mean computed from all control cells (may leak)")
+            all_ctrl_mask = pert_arr == control_label
+            if all_ctrl_mask.any():
+                self.control_mean = self._mean_rows(np.where(all_ctrl_mask)[0].tolist())
+        
         if cache_group_means:
             self._build_group_means()
         else:
             self.group_means = {}
+            self.perturbation_effect = {}
 
-        # Covariate vocabs
+        # Covariate vocabs from all cells; vocab coverage is model metadata, not target statistics.
         self.cov_maps = {}
         self.cov_dims = {}
         for key in [cell_type_key, dose_key, time_key, batch_key]:
@@ -223,7 +292,7 @@ class PertDataset(Dataset):
         # Target latent
         self.target_latents = None; self.target_latent_mask = None
 
-    # ── Row access ─────────────────────────────────────────────
+    # Row access
     def _row(self, idx):
         return _row_dense(self.X, idx)
 
@@ -232,13 +301,25 @@ class PertDataset(Dataset):
         m = np.asarray(Xg.mean(axis=0), dtype=np.float32).reshape(-1)
         return m
 
-    # ── Group means (sparse-safe) ──────────────────────────────
+    # Group means (sparse-safe)
     def _build_group_means(self):
         self.group_means = {}
         for p, indices in self.group_indices.items():
             self.group_means[p] = self._mean_rows(indices)
+        # Pre-compute perturbation effects: fixed delta per perturbation
+        self.perturbation_effect = {}
+        if self.control_label in self.group_means:
+            ctrl_mean = self.group_means[self.control_label]
+            for p, gm in self.group_means.items():
+                if p != self.control_label:
+                    self.perturbation_effect[p] = (gm - ctrl_mean).astype(np.float32)
+            self.perturbation_effect[self.control_label] = np.zeros_like(ctrl_mean, dtype=np.float32)
+        else:
+            # Fallback: use zeros
+            for p in self.group_means:
+                self.perturbation_effect[p] = np.zeros(len(self.group_means[p]), dtype=np.float32)
 
-    # ── Vocabulary ─────────────────────────────────────────────
+    # Vocabulary
     def set_vocab(self, pert_to_id, id_to_pert=None):
         self.pert_to_id = pert_to_id
         self.id_to_pert = id_to_pert or {i: p for p, i in pert_to_id.items()}
@@ -271,77 +352,130 @@ class PertDataset(Dataset):
         D = latent.shape[1]
         self.target_latents = torch.zeros(n, D)
         self.target_latent_mask = torch.zeros(n, dtype=torch.bool)
-        self.target_latents[indices] = latent
-        self.target_latent_mask[indices] = mask_in
+        self.target_latents[indices] = latent.float()
+        # Only set mask=True for indices in train split
+        train_set = set(self.source_indices[self.train_indices]) if self.train_indices else set(range(n))
+        for i, idx in enumerate(indices):
+            if mask_in[i] and idx.item() in train_set:
+                self.target_latent_mask[idx] = True
 
-    # ── Target resolution ──────────────────────────────────────
+    # Target resolution
     def _get_target(self, idx, pert_id):
-        if self.target_mode == "identity":
+        """Resolve training target.
+
+        - "identity": own expression
+        - "per_cell": own expression (per-cell counterfactual target)
+        - "group_mean" (default): group mean of perturbation
+        """
+        if self.target_mode in ("identity", "per_cell"):
             return self._row(idx)
         pert_str = self.id_to_pert.get(pert_id, self.pert_cats[0])
         if self.cache_group_means and pert_str in self.group_means:
             return self.group_means[pert_str].copy()
-        # On-demand
         if pert_str in self.group_indices:
             return self._mean_rows(self.group_indices[pert_str])
         return self._row(idx)
 
     def _get_control_input(self, idx, pert_id):
+        """Return control input based on control_input_mode.
+
+        Modes:
+        - "control_mean": train control mean (stable, fixed per perturbation)
+        - "random_control": random control cell (current behavior)
+        - "matched_control": same cell_type control cell
+        - "identity": own expression (when use_control_as_input=False)
+        """
         if self.target_mode == "identity":
             return self._row(idx)
         if not self.use_control_as_input:
             return self._row(idx)
         if self.is_control[idx]:
             return self._row(idx)
-        # Cell-type matched control
-        if self.pair_by and self.cell_type_key in self.adata.obs:
-            ct = str(self.adata.obs.iloc[idx][self.cell_type_key])
-            key_ctrl = (self.control_label, ct)
-            if key_ctrl in self.cell_type_group_indices:
-                ctrl_idx = np.random.choice(self.cell_type_group_indices[key_ctrl])
+        
+        mode = getattr(self, 'control_input_mode', 'random_control')
+        
+        if mode == "control_mean":
+            # Use train control mean (stable, no per-sample noise)
+            if self.pair_by and self.cell_type_key in self.adata.obs:
+                ct = str(self.adata.obs.iloc[idx][self.cell_type_key])
+                if ct in self.control_mean_by_ct:
+                    return self.control_mean_by_ct[ct].copy()
+            if self.control_mean is not None:
+                return self.control_mean.copy()
+            # Fallback to random control
+            if self.control_indices:
+                return self._row(np.random.choice(self.control_indices))
+            return self._row(idx)
+        
+        elif mode == "matched_control":
+            # Same cell-type control cell
+            if self.pair_by and self.cell_type_key in self.adata.obs:
+                ct = str(self.adata.obs.iloc[idx][self.cell_type_key])
+                if ct in self.control_mean_by_ct:
+                    # Use cell-type matched control mean for stability
+                    return self.control_mean_by_ct[ct].copy()
+            # Fallback to random control
+            if self.control_indices:
+                return self._row(np.random.choice(self.control_indices))
+            return self._row(idx)
+        
+        else:  # "random_control" or default
+            if self.pair_by and self.cell_type_key in self.adata.obs:
+                ct = str(self.adata.obs.iloc[idx][self.cell_type_key])
+                key_ctrl = (self.control_label, ct)
+                if key_ctrl in self.cell_type_group_indices:
+                    ctrl_idx = np.random.choice(self.cell_type_group_indices[key_ctrl])
+                    return self._row(ctrl_idx)
+            if self.control_indices:
+                ctrl_idx = np.random.choice(self.control_indices)
                 return self._row(ctrl_idx)
-        # Global control fallback
-        if self.control_indices:
-            ctrl_idx = np.random.choice(self.control_indices)
-            return self._row(ctrl_idx)
-        return self._row(idx)
+            return self._row(idx)
 
-    # ── __len__ / __getitem__ ──────────────────────────────────
+    # __len__ / __getitem__
     def __len__(self): return self.n_obs
 
     def __getitem__(self, idx):
-        obs = self.adata.obs.iloc[idx]
+        # Map DataLoader index to actual adata index (needed for split filtering)
+        real_idx = self.obs_indices[idx] if idx < len(self.obs_indices) else idx
+        source_idx = int(self.source_indices[real_idx])
+        obs = self.adata.obs.iloc[real_idx]
         if self._target_pert_id is not None:
             pert_id = self._target_pert_id; pert_str = self._target_pert
         else:
             pert_str = str(obs[self.label_key])
             pert_id = self.pert_to_id.get(pert_str, 0)
 
-        x = torch.tensor(self._get_control_input(idx, pert_id), dtype=torch.float32)
-        y = torch.tensor(self._get_target(idx, pert_id), dtype=torch.float32)
+        x = torch.tensor(self._get_control_input(real_idx, pert_id), dtype=torch.float32)
+        y = torch.tensor(self._get_target(real_idx, pert_id), dtype=torch.float32)
 
         cov = {}
         for key, vocab in self.cov_maps.items():
             if key and key in obs.index:
                 val = str(obs[key])
                 cov[key] = torch.tensor(vocab.get(val, 0), dtype=torch.long)
+            else:
+                # Always include ALL registered cov keys for consistent CovEncoder input dim
+                cov[key] = torch.tensor(0, dtype=torch.long)
 
         evidence = None
         evidence_conf = None
         if self.evidence_key and self.evidence_key in self.adata.obsm:
-            ev = self.adata.obsm[self.evidence_key][idx]
+            ev = self.adata.obsm[self.evidence_key][real_idx]
             evidence = torch.tensor(np.atleast_1d(np.squeeze(ev)), dtype=torch.float32)
             conf = float(obs.get("evidence_conf", 1.0)) if self.has_evidence_conf else 1.0
             evidence_conf = torch.tensor(conf, dtype=torch.float32)
 
         target_latent = None; mask = False
-        if self.target_latents is not None and idx < len(self.target_latents):
+        if self.target_latents is not None and source_idx < len(self.target_latents):
             if self.target_latent_mask is not None:
-                mask = bool(self.target_latent_mask[idx].item())
+                mask = bool(self.target_latent_mask[source_idx].item())
             else:
-                mask = bool(self.target_latents[idx].abs().sum() > 1e-10)
-            if mask: target_latent = self.target_latents[idx]
+                mask = bool(self.target_latents[source_idx].abs().sum() > 1e-10)
+            if mask: target_latent = self.target_latents[source_idx]
 
+        # Pre-computed perturbation effect (fixed per perturbation)
+        pe = self.perturbation_effect.get(pert_str, np.zeros(self.input_dim, dtype=np.float32))
+        
         return {
             "x": x, "y": y,
             "pert": torch.tensor(pert_id, dtype=torch.long),
@@ -349,20 +483,26 @@ class PertDataset(Dataset):
             "evidence_conf": evidence_conf,
             "target_latent": target_latent,
             "target_latent_mask": torch.tensor(mask, dtype=torch.bool),
-            "meta": {"idx": idx, "source_idx": idx, "target_idx": -1,
-                      "is_control": bool(self.is_control[idx]), "pert_str": pert_str},
+            "perturbation_effect": torch.tensor(pe),
+            "meta": {"idx": source_idx, "source_idx": source_idx, "target_idx": -1,
+                      "is_control": bool(self.is_control[real_idx]), "pert_str": pert_str,
+                      "control_input_mode": self.control_input_mode,
+                      "control_source": "train_mean" if self.control_input_mode == "control_mean" else "random"}, 
         }
 
 
-# ── Factory ──────────────────────────────────────────────────────
+# Factory
 
 def read_h5ad(path):
-    import scanpy as sc; return sc.read_h5ad(path)
+    try:
+        import anndata as ad
+        return ad.read_h5ad(path)
+    except Exception:
+        import scanpy as sc
+        return sc.read_h5ad(path)
 
-def build_dataset(path, config):
-    adata = read_h5ad(path)
-    return PertDataset(
-        adata,
+def _dataset_kwargs(config):
+    return dict(
         label_key=config.get("label_key", "perturbation"),
         control_label=config.get("control_label", "control"),
         cell_type_key=config.get("cell_type_key", "cell_type"),
@@ -376,13 +516,95 @@ def build_dataset(path, config):
         use_hvg=config.get("use_hvg", True),
         n_hvg=config.get("n_hvg", 2000),
         cache_group_means=config.get("cache_group_means", True),
+        split=config.get("split", None),
+        stats_split=config.get("stats_split", "train"),
+        control_input_mode=config.get("control_input_mode", "control_mean"),
+        warn_on_missing_stats=config.get("warn_on_missing_stats", True),
     )
+
+def build_dataset(path, config):
+    adata = read_h5ad(path)
+    return PertDataset(adata, **_dataset_kwargs(config))
+
+
+def _ensure_source_idx(adata):
+    if "_source_idx" not in adata.obs:
+        adata.obs["_source_idx"] = np.arange(adata.n_obs, dtype=np.int64)
+    return adata
+
+
+def _train_val_masks(adata, train_ratio=0.9, seed=42):
+    n = adata.n_obs
+    if "split" in adata.obs:
+        split = adata.obs["split"].astype(str).values
+        train_mask = split == "train"
+        val_mask = split == "val"
+        if not val_mask.any():
+            val_mask = split == "test"
+        if train_mask.any() and val_mask.any():
+            return train_mask, val_mask
+        logger.warning("split column exists but lacks train/val cells; falling back to random split")
+
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(n)
+    n_train = int(n * train_ratio)
+    train_mask = np.zeros(n, dtype=bool)
+    val_mask = np.zeros(n, dtype=bool)
+    train_mask[order[:n_train]] = True
+    val_mask[order[n_train:]] = True
+    return train_mask, val_mask
+
+
+def _copy_aligned_metadata(dst, src):
+    dst.pert_to_id = dict(src.pert_to_id)
+    dst.id_to_pert = dict(src.id_to_pert)
+    dst.pert_cats = list(src.pert_cats)
+    dst.n_perts = src.n_perts
+    dst.cov_maps = {k: dict(v) for k, v in src.cov_maps.items()}
+    dst.cov_dims = dict(src.cov_dims)
+    if src.cache_group_means:
+        dst.group_means = {k: v.copy() for k, v in src.group_means.items()}
+        dst.group_means_source = "train"
+    dst.perturbation_effect = {k: v.copy() for k, v in getattr(src, "perturbation_effect", {}).items()}
+    dst.control_mean = None if getattr(src, "control_mean", None) is None else src.control_mean.copy()
+    dst.control_mean_by_ct = {k: v.copy() for k, v in getattr(src, "control_mean_by_ct", {}).items()}
+    dst.control_indices = []
+
+
+def build_train_val_datasets(path, config, train_ratio=0.9, seed=42):
+    """Build train/val datasets without fitting statistics on validation cells."""
+    adata = _ensure_source_idx(read_h5ad(path))
+    train_mask, val_mask = _train_val_masks(adata, train_ratio=train_ratio, seed=seed)
+
+    train_adata = adata[train_mask].copy()
+    val_adata = adata[val_mask].copy()
+
+    train_cfg = dict(config)
+    train_cfg["split"] = None
+    train_cfg["stats_split"] = "train"
+    train_ds = PertDataset(train_adata, **_dataset_kwargs(train_cfg))
+
+    val_adata = align_adata_to_genes(val_adata, train_ds.selected_var_names)
+    val_cfg = dict(config)
+    val_cfg["split"] = None
+    val_cfg["stats_split"] = None
+    val_cfg["use_hvg"] = False
+    val_cfg["target_mode"] = "per_cell"
+    val_cfg["cache_group_means"] = False
+    val_cfg["warn_on_missing_stats"] = False
+    val_ds = PertDataset(val_adata, **_dataset_kwargs(val_cfg))
+    val_ds.selected_var_names = list(train_ds.selected_var_names)
+    _copy_aligned_metadata(val_ds, train_ds)
+
+    return train_ds, val_ds
+
+
 
 def build_loader(dataset, batch_size=128, shuffle=True, num_workers=0,
                  pin_memory=False, persistent_workers=False, prefetch_factor=2,
                  drop_last=False, avoid_single_batch=True):
     if avoid_single_batch and not drop_last and len(dataset) % batch_size == 1:
-        logger.warning(f"avoid_single_batch: last batch would be size 1 → forcing drop_last=True")
+        logger.warning(f"avoid_single_batch: last batch would be size 1; forcing drop_last=True")
         drop_last = True
     kwargs = dict(batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
                   collate_fn=bio_collate_fn, num_workers=num_workers,
@@ -391,13 +613,6 @@ def build_loader(dataset, batch_size=128, shuffle=True, num_workers=0,
         kwargs["persistent_workers"] = persistent_workers
         kwargs["prefetch_factor"] = prefetch_factor
     return DataLoader(dataset, **kwargs)
-
-def split_data(dataset, train_ratio=0.9, seed=42):
-    from torch.utils.data import random_split
-    n_train = int(len(dataset) * train_ratio)
-    n_val = len(dataset) - n_train
-    return random_split(dataset, [n_train, n_val],
-                         generator=torch.Generator().manual_seed(seed))
 
 def batch_summary(batch):
     s = {"x": tuple(batch["x"].shape), "y": tuple(batch["y"].shape),

@@ -86,6 +86,93 @@ def build_perturbation_prior(perturbation, genes=None, pathways=None,
     return parsed
 
 
+def build_perturbation_prior_v2(perturbation, genes=None, pathways=None,
+                                dataset_context=None, evidence_schema="bio_v2",
+                                max_tokens=512, temperature=0, timeout=30):
+    """Dataset-aware LLM query for perturbation prior. bio_v2 schema."""
+    cfg = get_llm_config()
+    max_tokens = min(int(max_tokens), 1024)
+    meta = {"model": cfg["model"], "max_tokens": max_tokens, "schema": evidence_schema}
+    if not cfg["api_key"]:
+        return {"ok": False, "reason": "missing_api_key", "_llm_meta": meta}
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return {"ok": False, "reason": "openai_package_missing", "_llm_meta": meta}
+
+    ctx = dataset_context or {}
+    ds_name = ctx.get("dataset_name", "unknown")
+    cell_line = ctx.get("cell_line", "unknown")
+    pert_type = ctx.get("perturbation_type", "unknown")
+    platform = ctx.get("platform", "unknown")
+    organism = ctx.get("organism", "human")
+    
+    gene_str = ", ".join(genes[:30]) if genes else "N/A"
+    path_str = ", ".join(pathways[:10]) if pathways else "N/A"
+
+    prompt = (
+        f"You are constructing a biological prior for a single-cell perturbation model.\n"
+        f"The prior must be specific to the dataset context below.\n\n"
+        f"=== Dataset Context ===\n"
+        f"Dataset: {ds_name}\n"
+        f"Cell line: {cell_line}\n"
+        f"Perturbation type: {pert_type}\n"
+        f"Platform: {platform}\n"
+        f"Organism: {organism}\n"
+        f"Task: single-cell perturbation response prediction\n\n"
+        f"=== Gene Context ===\n"
+        f"Genes of interest: {gene_str}\n"
+        f"Pathways: {path_str}\n\n"
+        f"=== Perturbation ===\n"
+        f"Target: {perturbation}\n\n"
+        f"IMPORTANT RULES:\n"
+        f"1. Do NOT use expression data or statistics.\n"
+        f"2. Prefer mechanisms plausible in {cell_line} under {pert_type}.\n"
+        f"3. If {cell_line} is K562 (leukemia cell line), consider: erythroid/myeloid programs, "
+        f"UPR/ER stress pathways, CRISPRi-specific knockdown effects.\n"
+        f"4. If uncertain, lower confidence_score below 0.5.\n"
+        f"5. Do not invent precise mechanisms.\n"
+        f"6. Avoid generic labels like \"gene expression\" or \"cellular process\".\n\n"
+        f"Return ONLY valid JSON (no markdown, no explanation):\n"
+        f'{{\n'
+        f'  "description": "1-2 sentence mechanism specific to {cell_line}/{pert_type}",\n'
+        f'  "confidence_score": 0.0-1.0,\n'
+        f'  "source": "llm_dataset_aware",\n'
+        f'  "perturbation_gene": "extracted gene symbol",\n'
+        f'  "perturbation_type": "{pert_type}",\n'
+        f'  "expected_direction": "loss_of_function|gain_of_function|unknown",\n'
+        f'  "cell_context": {{"cell_line": "{cell_line}", "organism": "{organism}"}},\n'
+        f'  "pathway_impact": [\n'
+        f'    {{"pathway": "specific pathway name", "direction": "up|down|unknown", "confidence": 0.0-1.0}}\n'
+        f'  ],\n'
+        f'  "tf_activity": [\n'
+        f'    {{"tf": "TF gene symbol", "direction": "up|down|unknown", "confidence": 0.0-1.0}}\n'
+        f'  ],\n'
+        f'  "marker_genes": [\n'
+        f'    {{"gene": "gene symbol", "direction": "up|down|unknown", "confidence": 0.0-1.0}}\n'
+        f'  ],\n'
+        f'  "response_programs": [\n'
+        f'    {{"program": "UPR|ER_stress|ribosome|cell_cycle|apoptosis|metabolism|chromatin|interferon|unknown",\n'
+        f'     "direction": "up|down|unknown", "confidence": 0.0-1.0}}\n'
+        f'  ],\n'
+        f'  "caveats": ["any limitations or uncertainties"]\n'
+        f'}}'
+    )
+
+    client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"], timeout=timeout)
+    try:
+        resp = client.chat.completions.create(
+            model=cfg["model"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens, temperature=temperature)
+        parsed = parse_json_response(resp.choices[0].message.content)
+    except Exception as e:
+        parsed = {"ok": False, "reason": str(e)[:200]}
+    if isinstance(parsed, dict):
+        parsed["_llm_meta"] = meta
+    return parsed
+
+
 def parse_json_response(text):
     """Extract JSON from text robustly. Returns dict."""
     if isinstance(text, dict):

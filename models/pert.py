@@ -17,22 +17,24 @@ class PertEncoder(nn.Module):
     """Encodes perturbation condition into a latent embedding.
 
     pert_mode:
-      "id"         - single categorical ID
-      "multihot"   - multi-hot vector of gene IDs [B, N]
-      "continuous" - continuous descriptor [B, F]
+      "id"              - single categorical ID
+      "id_plus_evidence" - categorical ID + evidence projection
+      "multihot"        - multi-hot vector of gene IDs [B, N]
+      "continuous"      - continuous descriptor [B, F]
 
     pert_agg (for multihot):
       "mean", "sum", "attention"
     """
 
     def __init__(self, num_perts, dim, hidden=None, pert_mode="id", pert_agg="mean",
-                 dropout=0.1):
+                 dropout=0.1, evidence_dim=None, evidence_pert_alpha=0.5):
         super().__init__()
         self.pert_mode = pert_mode
         self.pert_agg = pert_agg
         self.dim = dim
+        self.evidence_pert_alpha = evidence_pert_alpha
 
-        if pert_mode in ("id", "multihot"):
+        if pert_mode in ("id", "id_plus_evidence", "multihot"):
             self.embed = nn.Embedding(num_perts, dim, padding_idx=-1)
             self.dropout = nn.Dropout(dropout)
 
@@ -42,13 +44,31 @@ class PertEncoder(nn.Module):
         if pert_mode == "continuous":
             self.cont_encoder = MLP(hidden or dim, dim, hidden=hidden, layers=2, dropout=dropout)
 
+        if pert_mode == "id_plus_evidence":
+            if evidence_dim is None:
+                raise ValueError("evidence_dim must be set for pert_mode='id_plus_evidence'")
+            self.evidence_to_pert = MLP(dim, dim, hidden=dim, layers=2, dropout=dropout)
+
         self.out_proj = MLP(dim, dim, hidden=hidden, layers=2, dropout=dropout)
         self.out_norm = nn.LayerNorm(dim)
 
-    def forward(self, pert):
-        """pert -> [B, dim]"""
+    def forward(self, pert, evidence_emb=None):
+        """pert -> [B, dim]
+
+        Args:
+            pert: perturbation ID tensor [B] or multi-hot [B, N] or continuous [B, F]
+            evidence_emb: optional evidence embedding [B, dim] (used in id_plus_evidence mode)
+        """
         if self.pert_mode == "id":
             x = self.embed(pert)
+
+        elif self.pert_mode == "id_plus_evidence":
+            pert_id_emb = self.embed(pert)
+            if evidence_emb is not None:
+                evidence_pert = self.evidence_to_pert(evidence_emb)
+                x = pert_id_emb + self.evidence_pert_alpha * evidence_pert
+            else:
+                x = pert_id_emb
 
         elif self.pert_mode == "multihot":
             mask = (pert >= 0).float().unsqueeze(-1)

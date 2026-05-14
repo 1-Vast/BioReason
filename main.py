@@ -11,7 +11,7 @@ load_env()
 
 def build_parser():
     p = argparse.ArgumentParser(description="BioReason: evidence-guided latent biological reasoning")
-    sub = p.add_subparsers(dest="command", help="train | infer | eval | api-test | prior")
+    sub = p.add_subparsers(dest="command", help="train | infer | eval | prior | audit | api-test")
 
     pt = sub.add_parser("train", help="Train BioReason")
     pt.add_argument("--config", default="config/default.yaml")
@@ -55,8 +55,14 @@ def build_parser():
     pe.add_argument("--truth", required=True)
     pe.add_argument("--out", default="output/eval")
     pe.add_argument("--top_deg", type=int, default=50)
+    pe.add_argument("--split", default="test", help="obs split to evaluate; use 'all' to disable split filtering")
 
     pa = sub.add_parser("api-test", help="Test LLM API connectivity")
+
+    pau = sub.add_parser("audit", help="Strict data leakage audit")
+    pau.add_argument("--h5ad", required=True)
+    pau.add_argument("--target_latent", default=None)
+    pau.add_argument("--report", default="output/leak_audit.json")
 
     pp = sub.add_parser("prior", help="Stage 0: build evidence prior")
     pp.add_argument("--h5ad", required=True)
@@ -67,7 +73,13 @@ def build_parser():
     pp.add_argument("--use_llm", action="store_true", default=False)
     pp.add_argument("--min_conf", type=float, default=0.5)
     pp.add_argument("--evidence_dim", type=int, default=128)
-    pp.add_argument("--encoder", default="hash", choices=["hash", "sentence"])
+    pp.add_argument("--encoder", default="hash", choices=["hash", "sentence", "structured", "hybrid"])
+    pp.add_argument("--dataset_name", default=None)
+    pp.add_argument("--cell_line", default=None)
+    pp.add_argument("--perturbation_type", default=None)
+    pp.add_argument("--platform", default=None)
+    pp.add_argument("--organism", default=None)
+    pp.add_argument("--evidence_schema", default="bio_v2")
     pp.add_argument("--model_name", default=None)
     pp.add_argument("--audit", default="output/prior_audit.csv")
     pp.add_argument("--max_llm_calls", type=int, default=50)
@@ -82,15 +94,20 @@ def build_parser():
 
 def print_run_summary(args, cfg, kind="train"):
     train_cfg = cfg.get("train", {})
-    print(f"\n{'='*60}")
-    print(f"  BioReason {kind}")
-    print(f"  stage: {getattr(args, 'stage', 'N/A')} | device: {getattr(args, 'device', train_cfg.get('device','cuda'))} | amp: {train_cfg.get('amp',True)} | batch: {getattr(args, 'batch_size', train_cfg.get('batch_size',128)) or train_cfg.get('batch_size',128)} | workers: {train_cfg.get('num_workers',0)}")
-    print(f"  data: {getattr(args, 'h5ad', 'N/A')}")
-    if hasattr(args, 'save_dir') and args.save_dir: print(f"  output: {args.save_dir}")
-    elif hasattr(args, 'out'): print(f"  output: {args.out}")
+    tag = "train" if kind == "train" else kind
+    print("")
+    print(f"[{tag}] BioReason")
+    print(f"[{tag}] device={getattr(args, 'device', train_cfg.get('device','cuda'))} "
+          f"amp={train_cfg.get('amp', True)} "
+          f"batch={getattr(args, 'batch_size', None) or train_cfg.get('batch_size', 256)} "
+          f"workers={train_cfg.get('num_workers', 0)}")
+    if hasattr(args, "stage"):
+        print(f"[{tag}] stage={args.stage}")
+    print(f"[{tag}] data={getattr(args, 'h5ad', 'N/A')}")
+    if hasattr(args, 'save_dir') and args.save_dir: print(f"[{tag}] output={args.save_dir}")
+    elif hasattr(args, 'out'): print(f"[{tag}] output={args.out}")
     from utils.device import gpu_summary
-    print(f"  {gpu_summary()}")
-    print(f"{'='*60}\n")
+    print(f"[{tag}] {gpu_summary()}")
 
 
 # ── Train ────────────────────────────────────────────────────────
@@ -113,14 +130,28 @@ def cmd_train(args):
     print_run_summary(args, cfg, "train")
 
     import torch
-    from models.data import build_dataset, build_loader, split_data
+    from models.data import build_train_val_datasets, build_loader
     from models.reason import BioReason
     from models.loss import BioLoss
     from models.train import train_model, attach_target_latent
 
     data_cfg = cfg.get("data", {})
-    dataset = build_dataset(args.h5ad, data_cfg)
-    train_ds, val_ds = split_data(dataset)
+    train_ds, val_ds = build_train_val_datasets(
+        args.h5ad,
+        data_cfg,
+        train_ratio=train_cfg.get("train_ratio", 0.9),
+        seed=train_cfg.get("seed", 42),
+    )
+    dataset = train_ds
+
+    # Stage 3 target latents are attached to train cells only.
+    if args.stage == 3:
+        path = args.target_latent or train_cfg.get("target_latent")
+        if path and Path(path).exists():
+            attach_target_latent(train_ds, path)
+            print(f"Stage 3: target latent loaded from {path} (train-only mask applied)")
+        else:
+            print(f"WARNING: Stage 3, no target latent → latent loss = 0")
 
     bs = train_cfg.get("batch_size", 128); nw = train_cfg.get("num_workers", 0)
     pm = train_cfg.get("pin_memory", False); pw = train_cfg.get("persistent_workers", False)
@@ -134,16 +165,17 @@ def cmd_train(args):
     if train_cfg.get("profile"):
         from utils.profile import profile_loader, profile_train_step, suggest_loader_settings
         loader_stats = profile_loader(train_loader, args.device, batches=train_cfg.get("profile_batches", 20))
-        step_stats = profile_train_step(
-            BioReason(input_dim=dataset.input_dim, dim=cfg["model"].get("dim",256),
+        profile_model = BioReason(input_dim=dataset.input_dim, dim=cfg["model"].get("dim",256),
                        hidden=cfg["model"].get("hidden",512),
                        steps=cfg["model"].get("latent_steps",8),
                        heads=cfg["model"].get("heads",4), dropout=0, pert_mode="id",
                        num_perts=dataset.n_perts, evidence_dim=dataset.evidence_dim,
                        reason_mode=cfg["model"].get("reason_mode", "transformer"),
-                       evidence_mode=cfg["model"].get("evidence_mode", "film")).to(args.device),
+                       evidence_mode=cfg["model"].get("evidence_mode", "film")).to(args.device)
+        step_stats = profile_train_step(
+            profile_model,
             train_loader, BioLoss(cfg.get("loss",{})),
-            torch.optim.AdamW([torch.zeros(1, requires_grad=True)]),
+            torch.optim.AdamW(profile_model.parameters()),
             args.device, stage=args.stage, batches=train_cfg.get("profile_batches", 20))
         suggestions = suggest_loader_settings(loader_stats, step_stats)
         if suggestions:
@@ -166,14 +198,6 @@ def cmd_train(args):
     model_cfg["cov_dims"] = dict(dataset.cov_dims)
     model_cfg.setdefault("reason_mode", "transformer")
     model_cfg.setdefault("evidence_mode", "film")
-
-    if args.stage == 3:
-        path = args.target_latent or train_cfg.get("target_latent")
-        if path and Path(path).exists():
-            attach_target_latent(dataset, path)
-            print(f"Stage 3: target latent loaded from {path}")
-        else:
-            print(f"WARNING: Stage 3, no target latent → latent loss = 0")
 
     model = BioReason(input_dim=dataset.input_dim, dim=model_cfg.get("dim", 256),
                        hidden=model_cfg.get("hidden", 512), steps=model_cfg.get("latent_steps", 8),
@@ -240,15 +264,35 @@ def cmd_eval(args):
     from models.eval import compute_metrics, save_metrics
     from models.data import load_h5ad
     data = np.load(args.pred)
-    preds = data["preds"]; deltas = data.get("deltas"); latents = data.get("latents")
+    preds = data["preds"]
+    deltas = data["deltas"] if "deltas" in data.files else None
+    latents = data["latents"] if "latents" in data.files else None
+    indices = data["indices"] if "indices" in data.files else None
     from scipy.sparse import issparse
     adata = load_h5ad(args.truth)
     X = adata.X.toarray() if issparse(adata.X) else np.asarray(adata.X)
-    metrics = compute_metrics(X[:preds.shape[0]], preds, delta_pred=deltas, latents=latents, top_deg=args.top_deg)
+    if indices is None:
+        indices = np.arange(preds.shape[0])
+        print("[eval] WARNING: prediction file has no indices; using row order")
+    indices = np.asarray(indices, dtype=np.int64)
+    keep = np.ones(len(indices), dtype=bool)
+    if args.split != "all" and "split" in adata.obs:
+        split_arr = adata.obs["split"].astype(str).values
+        keep = split_arr[indices] == args.split
+        if not keep.any():
+            raise ValueError(f"No predicted cells match split='{args.split}'. Use --split all to evaluate all rows.")
+    elif args.split != "all":
+        print("[eval] WARNING: truth has no obs['split']; evaluating all predicted rows")
+    truth = X[indices[keep]]
+    pred_eval = preds[keep]
+    delta_eval = deltas[keep] if deltas is not None else None
+    latent_eval = latents[keep] if latents is not None else None
+    metrics = compute_metrics(truth, pred_eval, delta_pred=delta_eval, latents=latent_eval, top_deg=args.top_deg)
     save_metrics(metrics, args.out)
-    print("\n=== BioReason Evaluation ===")
+    print("")
+    print(f"[eval] split={args.split} cells={pred_eval.shape[0]} genes={pred_eval.shape[1]}")
     for k, v in metrics.items(): print(f"  {k}: {v:.6f}")
-    print("============================\n")
+    print(f"[eval] saved={args.out}")
 
 
 def cmd_api_test(args):
@@ -258,6 +302,28 @@ def cmd_api_test(args):
     print(f"Key: {'***configured***' if cfg['api_key'] else 'MISSING'}")
     result = test_llm_connection()
     print(f"Connection: {'OK' if result['ok'] else 'FAILED'} ({result['reason']})")
+
+
+def cmd_audit(args):
+    import json
+    from pathlib import Path
+    import anndata as ad
+    from tools.audit_leak import run_audit
+
+    adata = ad.read_h5ad(args.h5ad)
+    passed, summary = run_audit(adata, args.target_latent)
+    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.report).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    print("")
+    print(f"[audit] cells={adata.n_obs} genes={adata.n_vars} result={'PASS' if passed else 'FAIL'}")
+    print(f"[audit] issues={summary['total_issues']} high={summary['high']} medium={summary['medium']} low={summary['low']}")
+    if summary.get("split_counts"):
+        print(f"[audit] split={summary['split_counts']}")
+    for issue in summary["issues"][:20]:
+        print(f"  [{issue['severity']}] {issue['item']}: {issue['msg']}")
+    print(f"[audit] report={args.report}")
+    if not passed:
+        raise SystemExit(1)
 
 
 def cmd_prior(args):
@@ -278,6 +344,12 @@ def cmd_prior(args):
         "--llm_max_tokens", str(args.llm_max_tokens),
         "--llm_cache", args.llm_cache,
         "--llm_sleep", str(args.llm_sleep),
+        "--dataset_name", args.dataset_name or "",
+        "--cell_line", args.cell_line or "",
+        "--perturbation_type", args.perturbation_type or "",
+        "--platform", args.platform or "",
+        "--organism", args.organism or "",
+        "--evidence_schema", args.evidence_schema,
     ]
     if args.kb:
         _sys.argv.extend(["--kb", args.kb])
@@ -293,9 +365,12 @@ def cmd_prior(args):
 
 
 def main():
+    from utils.log import setup_logger
+    setup_logger()
     parser = build_parser()
     args = parser.parse_args()
-    cmds = {"train": cmd_train, "infer": cmd_infer, "eval": cmd_eval, "api-test": cmd_api_test, "prior": cmd_prior}
+    cmds = {"train": cmd_train, "infer": cmd_infer, "eval": cmd_eval,
+            "api-test": cmd_api_test, "prior": cmd_prior, "audit": cmd_audit}
     if args.command in cmds:
         cmds[args.command](args)
     else:

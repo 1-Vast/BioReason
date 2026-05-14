@@ -21,10 +21,10 @@ def move_batch(batch, device, non_blocking=True):
 
 def prepare_stage_batch(batch, stage):
     if stage == 2:
-        return batch.get("evidence"), None, batch.get("target_latent_mask")
+        return batch.get("evidence"), None, batch.get("target_latent_mask"), batch.get("evidence_conf")
     if stage == 3:
-        return None, batch.get("target_latent"), batch.get("target_latent_mask")
-    return None, None, None
+        return None, batch.get("target_latent"), batch.get("target_latent_mask"), batch.get("evidence_conf")
+    return None, None, None, batch.get("evidence_conf")
 
 
 def attach_target_latent(dataset, path):
@@ -74,16 +74,26 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
                 grad_clip=1.0, use_amp=True, non_blocking=True, progress=True,
                 log_every=20, profile=False, epoch=1, evi_warm=False,
                 evi_warm_epochs=0, evi_warm_margin=0.02, evi_log=True,
-                latent_only_bp=True, latent_only_modules=None):
+                latent_only_bp=True, latent_only_modules=None, config=None):
     from contextlib import nullcontext
     from utils.log import make_bar, update_bar_postfix, short_float
     from utils.device import gpu_mem_gb, get_autocast
 
+    # Evidence policy params from config
+    _use_ep = config.get("use_evidence_policy", "quality_gate") if config else "quality_gate"
+    _ep_dropout = config.get("evidence_dropout", 0.2) if config else 0.2
+    _min_conf = config.get("min_evidence_conf_train", 0.35) if config else 0.35
+    _warm_start_epoch = config.get("evidence_warm_start_epoch", 2) if config else 2
+
     model.train()
     n_batches = len(dataloader)
     loss_keys = ["loss", "expr", "delta", "deg", "latent", "evidence", "mmd",
-                 "evi_gain", "z_shift", "evi_rec", "latent_align", "latent_only"]
+                 "evi_gain", "z_shift", "evi_rec", "latent_align", "latent_only",
+                 "evi_contrast"]
     loss_sum = {k: 0.0 for k in loss_keys}
+    gate_sum = 0.0
+    gate_sq_sum = 0.0
+    gate_count = 0.0
     n_samples = 0
     t_data = 0.0
     t_step_start = time.perf_counter()
@@ -117,19 +127,40 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
         t_data_end = time.perf_counter()
         t_data += t_data_end - t_step_start
         b = move_batch(batch_cpu, device, non_blocking=non_blocking)
-        evidence, target_latent, tmask = prepare_stage_batch(b, stage)
+        evidence, target_latent, tmask, evidence_conf = prepare_stage_batch(b, stage)
+
+        # Evidence policy: quality_gate / off / always + dropout
+        if _use_ep == "off":
+            evidence = None
+            evidence_conf = None
+        elif _use_ep == "quality_gate":
+            if evidence is not None and evidence_conf is not None:
+                gate = (evidence_conf >= _min_conf).float().view(-1, 1)
+                evidence = evidence * gate
+                if _warm_start_epoch > 0 and epoch <= _warm_start_epoch:
+                    evidence = None
+                    evidence_conf = None
+        # "always" = no filtering
+
+        # Evidence dropout (training only)
+        if evidence is not None and _ep_dropout > 0:
+            keep = torch.rand(evidence.size(0), device=evidence.device) > _ep_dropout
+            evidence = evidence * keep.float().view(-1, 1)
+            if evidence_conf is not None:
+                evidence_conf = evidence_conf * keep.float()
+
         autocast_ctx = get_autocast(device, use_amp) if use_amp else nullcontext()
         loss_batch = {"x": b["x"], "y": b["y"], "evidence": evidence,
                       "target_latent": target_latent, "target_latent_mask": tmask,
-                      "evidence_conf": b.get("evidence_conf")}
+                      "evidence_conf": evidence_conf, "pert": b["pert"]}
 
         if warm_active and evidence is not None:
             optimizer.zero_grad(set_to_none=True)
             with autocast_ctx:
-                out_ev = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, return_latent=True)
+                out_ev = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, evidence_conf=evidence_conf, return_latent=True)
                 L_ev = loss_fn(out_ev, loss_batch, stage=2)
                 with torch.no_grad():
-                    out_no = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, return_latent=True)
+                    out_no = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, evidence_conf=None, return_latent=True)
                     L_no = loss_fn(out_no, {"x": b["x"], "y": b["y"], "evidence": None}, stage=1)
             optimizer_step(L_ev["loss"])
             L = dict(L_ev)
@@ -140,14 +171,16 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
                 latent_only_applied = 0.0
                 try:
                     with autocast_ctx:
-                        out_lat = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, return_latent=True)
+                        out_lat = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, evidence_conf=evidence_conf, return_latent=True)
                         L_lat = loss_fn(out_lat, loss_batch, stage=2)
                         with torch.no_grad():
-                            out_no_ref = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, return_latent=True)
+                            out_no_ref = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, evidence_conf=None, return_latent=True)
                         w_gain = getattr(loss_fn, "weights", {}).get("evi_gain", 0.0)
                         w_recon = getattr(loss_fn, "weights", {}).get("evi_recon", getattr(loss_fn, "weights", {}).get("evidence", 1.0))
                         w_shift = getattr(loss_fn, "weights", {}).get("evi_shift", 0.0)
                         loss_evi_gain = torch.relu(L_lat["deg"] - L_no["deg"].detach() + evi_warm_margin)
+                        if evidence_conf is not None:
+                            loss_evi_gain = loss_evi_gain * evidence_conf.float().mean()
                         z_shift = torch.norm(out_lat["latent"] - out_no_ref["latent"].detach(), dim=-1).mean()
                         loss_evi_shift = torch.relu(torch.tensor(0.1, device=device) - z_shift) if w_shift > 0 else torch.tensor(0.0, device=device)
                         latent_only_loss = w_gain * loss_evi_gain + w_recon * L_lat["evidence"] + w_shift * loss_evi_shift
@@ -170,7 +203,7 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
             optimizer.zero_grad(set_to_none=True)
             pred_batch = {"x": b["x"], "y": b["y"], "evidence": None}
             with autocast_ctx:
-                out = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, return_latent=True)
+                out = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, evidence_conf=None, return_latent=True)
                 L_pred = loss_fn(out, pred_batch, stage=1)
             optimizer_step(L_pred["loss"])
             L = dict(L_pred)
@@ -180,7 +213,7 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
             latent_only_applied = 0.0
             try:
                 with autocast_ctx:
-                    out_lat = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, return_latent=True)
+                    out_lat = model(b["x"], b["pert"], cov=b.get("cov"), evidence=None, evidence_conf=None, return_latent=True)
                     L_lat = loss_fn(out_lat, loss_batch, stage=3)
                     latent_only_loss = getattr(loss_fn, "weights", {}).get("latent", 1.0) * L_lat["latent"]
                 latent_only_applied = 1.0 if optimizer_step(latent_only_loss) else 0.0
@@ -197,11 +230,18 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
                 warned_no_evidence = True
             optimizer.zero_grad(set_to_none=True)
             with autocast_ctx:
-                out = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, return_latent=True)
+                out = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, evidence_conf=evidence_conf, return_latent=True)
                 L = loss_fn(out, loss_batch, stage=stage)
             optimizer_step(L["loss"])
 
         n_samples += b["x"].size(0)
+        # Track evidence gate stats
+        if evidence is not None:
+            gate_val = getattr(model.reasoner.evidence_gate, '_last_gate', None)
+            if gate_val is not None:
+                gate_sum += gate_val.detach().sum().item()
+                gate_sq_sum += (gate_val.detach() ** 2).sum().item()
+                gate_count += gate_val.numel()
         for k in loss_sum:
             v = L.get(k)
             if isinstance(v, torch.Tensor) and v.numel() > 0:
@@ -212,6 +252,13 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
         if progress and bar is not None and (bi + 1) % log_every == 0:
             avg_loss = loss_sum["loss"] / (bi + 1)
             extra = {"mem": f"{gpu_mem_gb():.1f}GB"}
+            if gate_count > 0:
+                gate_mean = gate_sum / gate_count
+                gate_std = (gate_sq_sum / gate_count - gate_mean ** 2) ** 0.5
+                extra.update({
+                    "gate_m": short_float(gate_mean),
+                    "gate_s": short_float(gate_std),
+                })
             if warm_active and evi_log:
                 extra.update({
                     "evi_gain": short_float(loss_sum["evi_gain"] / (bi + 1)),
@@ -234,25 +281,40 @@ def train_epoch(model, dataloader, loss_fn, optimizer, scaler, device, stage=1,
     return stats
 
 
-def validate(model, dataloader, loss_fn, device, stage=1, use_amp=True, non_blocking=True, progress=True):
+def validate(model, dataloader, loss_fn, device, stage=1, use_amp=True, non_blocking=True, progress=True, config=None):
     from contextlib import nullcontext
     from utils.log import make_bar, update_bar_postfix
     from utils.device import gpu_mem_gb, get_autocast
 
+    # Evidence policy for validation: quality_gate / off, no dropout, no warm_start
+    _use_ep = config.get("use_evidence_policy", "quality_gate") if config else "quality_gate"
+    _min_conf = config.get("min_evidence_conf_train", 0.35) if config else 0.35
+
     model.eval()
     n_batches = len(dataloader)
-    loss_sum = {k: 0.0 for k in ["loss", "expr", "delta", "deg", "latent", "evidence", "mmd"]}
+    loss_sum = {k: 0.0 for k in ["loss", "expr", "delta", "deg", "latent", "evidence", "mmd", "evi_contrast"]}
     bar = make_bar(dataloader, enable=progress, desc=f"Val   stg{stage}", total=n_batches)
 
     with torch.no_grad():
         for bi, batch_cpu in enumerate(bar):
             b = move_batch(batch_cpu, device, non_blocking=non_blocking)
-            evidence, target_latent, tmask = prepare_stage_batch(b, stage)
+            evidence, target_latent, tmask, evidence_conf = prepare_stage_batch(b, stage)
+
+            # Evidence policy for validation: no dropout, no warm_start
+            if _use_ep == "off":
+                evidence = None
+                evidence_conf = None
+            elif _use_ep == "quality_gate":
+                if evidence is not None and evidence_conf is not None:
+                    gate = (evidence_conf >= _min_conf).float().view(-1, 1)
+                    evidence = evidence * gate
+
             ctx = get_autocast(device, use_amp) if use_amp else nullcontext()
             with ctx:
-                out = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, return_latent=True)
+                out = model(b["x"], b["pert"], cov=b.get("cov"), evidence=evidence, evidence_conf=evidence_conf, return_latent=True)
                 L = loss_fn(out, {"x": b["x"], "y": b["y"], "evidence": evidence,
-                                  "target_latent": target_latent, "target_latent_mask": tmask}, stage=stage)
+                                  "target_latent": target_latent, "target_latent_mask": tmask,
+                                  "evidence_conf": evidence_conf, "pert": b["pert"]}, stage=stage)
             for k in loss_sum:
                 v = L.get(k)
                 if v is not None and v.numel() > 0:
@@ -330,6 +392,12 @@ def train_model(model, train_loader, val_loader, config, loss_fn=None):
 
     device = get_device(config.get("device", "cuda"))
     model = model.to(device)
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision(config.get("matmul_precision", "high"))
+        except Exception:
+            pass
     init_from = initialize_stage3_model(model, config, device=device)
     if init_from:
         config["stage3_loaded_from"] = init_from
@@ -358,8 +426,11 @@ def train_model(model, train_loader, val_loader, config, loss_fn=None):
         except Exception as e:
             logger.warning(f"torch.compile failed: {e}")
 
-    logger.info(f"BioReason train | stage={stage} | device={device} | amp={use_amp} | epochs={epochs}")
-    logger.info(gpu_summary())
+    logger.info("")
+    logger.info(f"[train] stage={stage} epochs={epochs} device={device} amp={use_amp} "
+                f"batch={getattr(train_loader, 'batch_size', '?')} train={len(train_loader.dataset)} "
+                f"val={len(val_loader.dataset) if val_loader else 0}")
+    logger.info(f"[train] gpu={gpu_summary()}")
 
     for epoch in range(1, epochs + 1):
         t0 = time.perf_counter()
@@ -374,21 +445,22 @@ def train_model(model, train_loader, val_loader, config, loss_fn=None):
             evi_log=config.get("evi_log", True),
             latent_only_bp=config.get("latent_only_bp", True),
             latent_only_modules=config.get("latent_only_modules"),
+            config=config,
         )
         val_stats = validate(model, val_loader, loss_fn, device, stage=stage,
                              use_amp=use_amp, non_blocking=non_blocking,
-                             progress=progress) if val_loader else {}
+                             progress=progress, config=config) if val_loader else {}
         elapsed = time.perf_counter() - t0
         sync_if_cuda(device)
 
-        parts = [f"Epoch {epoch:03d}/{epochs}"]
+        parts = [f"[train] ep {epoch:03d}/{epochs}"]
         if stage == 2 and config.get("evi_warm", True) and epoch <= config.get("evi_warm_epochs", 10):
-            parts.append("stg2 warm")
+            parts.append("stg2-warm")
         if stage == 3:
             parts.append(f"init={config.get('stage3_loaded_from', config.get('stage3_init', 'stage1'))}")
-        parts.append(f"tr {format_loss(train_stats)}")
+        parts.append(f"train {format_loss(train_stats)}")
         if val_stats:
-            parts.append(f"vl {format_loss(val_stats, prefix='vl_')}")
+            parts.append(f"val {format_loss(val_stats)}")
         parts.append(format_speed(train_stats.get("samples", 0), elapsed))
         parts.append(f"gpu {gpu_mem_gb():.1f}GB")
         logger.info(" | ".join(parts))
@@ -406,5 +478,5 @@ def train_model(model, train_loader, val_loader, config, loss_fn=None):
         export_target_latent(model, train_loader, device, export_path, use_amp=use_amp,
                              non_blocking=non_blocking, progress=progress)
 
-    logger.info(f"Training done -> {final_path}")
+    logger.info(f"[train] done model={final_path}")
     return model

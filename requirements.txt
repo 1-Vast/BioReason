@@ -1,11 +1,16 @@
-torch>=1.13
-numpy
-pandas
-scipy
-scikit-learn
-anndata
-scanpy
-pyyaml
-python-dotenv
-tqdm
-openai
+# BioReason core runtime
+# Install the CUDA build of torch that matches your GPU/driver if needed.
+torch>=2.0
+numpy>=1.23
+pandas>=1.5
+scipy>=1.10
+scikit-learn>=1.2
+anndata>=0.9
+scanpy>=1.9
+PyYAML>=6.0
+python-dotenv>=1.0
+tqdm>=4.65
+openai>=1.0
+
+# Optional: only needed for tools/text.py --encoder sentence.
+# sentence-transformers>=2.2

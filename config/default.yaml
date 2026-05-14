@@ -43,3 +43,6 @@ prior:
   llm_cache: "output/llm_cache.json"
   llm_sleep: 0.0
   dry_run: false
+
+evidence_encoder_mode: "structured"
+evidence_schema: "bio_v2"

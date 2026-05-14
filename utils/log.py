@@ -1,25 +1,23 @@
-"""Lightweight logging and progress bar utilities.
-
-Uses tqdm for progress bars. All output concise — no per-step printing.
-"""
+"""Lightweight logging and progress utilities."""
 
 import logging
-import time
 import sys
 
 
 def setup_logger(name="BioReason", level=None):
-    """Configure root logger with clean format."""
+    """Configure project logger with compact plain-text output."""
     if level is None:
         level = logging.INFO
-    fmt = logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")
+    fmt = logging.Formatter("%(message)s")
     h = logging.StreamHandler(sys.stdout)
     h.setFormatter(fmt)
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(h)
+    root.setLevel(level)
     logger = logging.getLogger(name)
-    logger.handlers.clear()
-    logger.addHandler(h)
     logger.setLevel(level)
-    logger.propagate = False
+    logger.propagate = True
     return logger
 
 
@@ -33,10 +31,10 @@ def short_float(x, width=4):
 
 
 def format_loss(loss_dict, prefix=""):
-    """Format loss dict to compact string."""
+    """Format only key training signals."""
     parts = []
-    for k in ["loss", "expr", "delta", "deg", "latent", "evidence", "mmd",
-              "evi_gain", "z_shift", "evi_rec", "latent_align", "latent_only"]:
+    for k in ["loss", "deg", "latent", "evidence", "evi_gain", "z_shift",
+              "evi_rec", "latent_align", "mmd"]:
         v = loss_dict.get(k)
         if v is not None and abs(v) > 1e-10:
             parts.append(f"{prefix}{k}={short_float(v)}")
@@ -44,26 +42,26 @@ def format_loss(loss_dict, prefix=""):
 
 
 def format_speed(samples, elapsed):
-    """Format throughput: cells/sec or samples/sec."""
+    """Format throughput as cells/sec."""
     if elapsed < 0.001:
         return "--- cells/s"
-    rate = samples / elapsed
-    return f"{int(rate)} cells/s"
+    return f"{int(samples / elapsed)} cells/s"
 
 
 def make_bar(iterable, enable=True, desc="", total=None):
-    """Create tqdm bar or return iterable unchanged."""
-    if not enable:
+    """Create a quiet ASCII tqdm bar only for real interactive terminals."""
+    if not enable or not sys.stderr.isatty():
         return iterable
     try:
         from tqdm import tqdm
-        return tqdm(iterable, desc=desc, total=total, leave=False, ncols=120)
+        return tqdm(iterable, desc=desc, total=total, leave=False, ncols=96,
+                    ascii=True, dynamic_ncols=False, mininterval=1.0)
     except ImportError:
         return iterable
 
 
 def update_bar_postfix(bar, loss_dict=None, extra=None):
-    """Update tqdm postfix with loss + speed info."""
+    """Update tqdm postfix with compact metrics."""
     if bar is None or not hasattr(bar, "set_postfix"):
         return
     info = {}

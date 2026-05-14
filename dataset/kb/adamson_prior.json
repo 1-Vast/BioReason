@@ -1,0 +1,161 @@
+{
+  "SPI1": {
+    "description": "SPI1 (PU.1) is a master transcription factor for myeloid and B-cell development. CRISPR knockdown of SPI1 in K562 disrupts myeloid transcriptional programs.",
+    "confidence_score": 0.85,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "Myeloid differentiation", "direction": "down", "confidence": 0.85},
+      {"pathway": "Hematopoietic development", "direction": "down", "confidence": 0.80},
+      {"pathway": "Immune response", "direction": "down", "confidence": 0.75}
+    ],
+    "tf_activity": [
+      {"tf": "SPI1", "direction": "down"},
+      {"tf": "CEBPA", "direction": "down"},
+      {"tf": "IRF8", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "CSF1R", "direction": "down"},
+      {"gene": "CD14", "direction": "down"},
+      {"gene": "FCGR3A", "direction": "down"},
+      {"gene": "ITGAM", "direction": "down"},
+      {"gene": "MPO", "direction": "down"}
+    ]
+  },
+  "EP300": {
+    "description": "EP300 (p300) is a histone acetyltransferase that acts as a transcriptional coactivator. CRISPR knockdown disrupts enhancer-mediated transcription and chromatin regulation.",
+    "confidence_score": 0.85,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "Chromatin remodeling", "direction": "down", "confidence": 0.85},
+      {"pathway": "Transcriptional regulation", "direction": "down", "confidence": 0.85},
+      {"pathway": "Cell cycle", "direction": "down", "confidence": 0.70}
+    ],
+    "tf_activity": [
+      {"tf": "TP53", "direction": "down"},
+      {"tf": "MYC", "direction": "down"},
+      {"tf": "E2F1", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "CCND1", "direction": "down"},
+      {"gene": "CDKN1A", "direction": "up"},
+      {"gene": "H2AFX", "direction": "up"},
+      {"gene": "FOS", "direction": "down"},
+      {"gene": "JUN", "direction": "down"}
+    ]
+  },
+  "SNAI1": {
+    "description": "SNAI1 (Snail) is a master regulator of epithelial-mesenchymal transition (EMT). CRISPR knockdown reduces mesenchymal and migratory phenotypes.",
+    "confidence_score": 0.82,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "EMT", "direction": "down", "confidence": 0.82},
+      {"pathway": "Cell migration", "direction": "down", "confidence": 0.80},
+      {"pathway": "TGF-beta signaling", "direction": "down", "confidence": 0.75}
+    ],
+    "tf_activity": [
+      {"tf": "SNAI1", "direction": "down"},
+      {"tf": "ZEB1", "direction": "down"},
+      {"tf": "TWIST1", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "CDH1", "direction": "up"},
+      {"gene": "VIM", "direction": "down"},
+      {"gene": "FN1", "direction": "down"},
+      {"gene": "SNAI2", "direction": "down"},
+      {"gene": "MMP2", "direction": "down"}
+    ]
+  },
+  "ZNF326": {
+    "description": "ZNF326 is a zinc finger protein involved in transcriptional regulation and mRNA processing. CRISPR knockdown affects RNA splicing and transcription.",
+    "confidence_score": 0.70,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "RNA processing", "direction": "down", "confidence": 0.70},
+      {"pathway": "Transcriptional regulation", "direction": "down", "confidence": 0.65}
+    ],
+    "tf_activity": [
+      {"tf": "ZNF326", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "SNRPN", "direction": "down"},
+      {"gene": "HNRNPA1", "direction": "down"},
+      {"gene": "SRSF1", "direction": "down"}
+    ]
+  },
+  "BHLHE40": {
+    "description": "BHLHE40 (DEC1/Stra13) is a basic helix-loop-helix transcription factor involved in circadian rhythm, hypoxia response, and cell differentiation. CRISPR knockdown disrupts circadian and metabolic gene programs.",
+    "confidence_score": 0.78,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "Circadian rhythm", "direction": "down", "confidence": 0.78},
+      {"pathway": "Hypoxia response", "direction": "down", "confidence": 0.75},
+      {"pathway": "Cell differentiation", "direction": "down", "confidence": 0.70}
+    ],
+    "tf_activity": [
+      {"tf": "BHLHE40", "direction": "down"},
+      {"tf": "HIF1A", "direction": "down"},
+      {"tf": "CLOCK", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "PER1", "direction": "down"},
+      {"gene": "VEGFA", "direction": "down"},
+      {"gene": "LDHA", "direction": "down"},
+      {"gene": "BNIP3", "direction": "down"},
+      {"gene": "SLC2A1", "direction": "down"}
+    ]
+  },
+  "CREB1": {
+    "description": "CREB1 is a cAMP response element binding protein that regulates gene expression in response to growth factors, stress, and neuronal signals. CRISPR knockdown disrupts cAMP-dependent transcription.",
+    "confidence_score": 0.82,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "cAMP signaling", "direction": "down", "confidence": 0.82},
+      {"pathway": "Cell survival", "direction": "down", "confidence": 0.78},
+      {"pathway": "Metabolic regulation", "direction": "down", "confidence": 0.75}
+    ],
+    "tf_activity": [
+      {"tf": "CREB1", "direction": "down"},
+      {"tf": "ATF1", "direction": "down"},
+      {"tf": "CREM", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "BDNF", "direction": "down"},
+      {"gene": "FOS", "direction": "down"},
+      {"gene": "NR4A1", "direction": "down"},
+      {"gene": "EGR1", "direction": "down"},
+      {"gene": "PCK1", "direction": "down"}
+    ]
+  },
+  "DDIT3": {
+    "description": "DDIT3 (CHOP/GADD153) is a stress-inducible transcription factor that mediates ER stress-induced apoptosis. CRISPR knockdown reduces UPR-mediated cell death signaling.",
+    "confidence_score": 0.85,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "ER stress / UPR", "direction": "down", "confidence": 0.85},
+      {"pathway": "Apoptosis", "direction": "down", "confidence": 0.82},
+      {"pathway": "Autophagy", "direction": "down", "confidence": 0.75}
+    ],
+    "tf_activity": [
+      {"tf": "DDIT3", "direction": "down"},
+      {"tf": "ATF4", "direction": "down"},
+      {"tf": "XBP1", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "TRIB3", "direction": "down"},
+      {"gene": "BBC3", "direction": "down"},
+      {"gene": "BIM", "direction": "down"},
+      {"gene": "CHAC1", "direction": "down"},
+      {"gene": "HERPUD1", "direction": "down"}
+    ]
+  },
+  "62(mod)": {
+    "description": "Modified CRISPR construct with combination perturbation effect targeting multiple genes. Complex transcriptional impact with broader pathway effects.",
+    "confidence_score": 0.50,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "Transcriptional regulation", "direction": "unknown", "confidence": 0.50}
+    ],
+    "tf_activity": [],
+    "marker_genes": []
+  }
+}

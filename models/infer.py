@@ -1,4 +1,4 @@
-"""Inference for BioReason — preallocated/memmap output, no torch.cat spike.
+"""Inference for BioReason: preallocated/memmap output, no torch.cat spike.
 
 Uses inference_mode, tqdm. Preallocated NumPy arrays avoid double memory.
 Optional memmap for million-cell inference.
@@ -66,6 +66,7 @@ def predict(model, dataloader, device="cuda", use_amp=True, target_pert=None,
     metas, pert_list, pert_strs = [], [], []
     ptr = 0
     bar = make_bar(dataloader, enable=progress, desc="Infer")
+    print(f"[infer] cells={n} genes={G} latent={D} device={device} amp={use_amp}")
 
     with torch.inference_mode():
         for batch_cpu in bar:
@@ -86,7 +87,7 @@ def predict(model, dataloader, device="cuda", use_amp=True, target_pert=None,
             if progress:
                 update_bar_postfix(bar, extra={"cells": ptr, "mem": f"{gpu_mem_gb():.1f}GB"})
 
-    print(f"  prealloc: [{ptr}, {G}], {dtype.__name__}, est ~{est_gb:.1f}GB RAM")
+    print(f"[infer] done cells={ptr} genes={G} mem_est={est_gb:.1f}GB")
     return preds[:ptr], deltas[:ptr], latents[:ptr], metas, np.array(pert_list), pert_strs
 
 
@@ -99,12 +100,11 @@ def predict_counterfactual(model, dataset, pert, batch_size=128, device="cuda", 
 
 def save_pred(preds, deltas, latents, metas, pert_arr, pert_strs, output_dir, prefix="pred"):
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Saving to {output_dir}/{prefix}.npz ... ", end="", flush=True)
     np.savez(output_dir / f"{prefix}.npz",
              preds=np.asarray(preds), deltas=np.asarray(deltas), latents=np.asarray(latents),
              pert=pert_arr, pert_str=np.array(pert_strs),
              indices=np.array([m.get("idx", i) for i, m in enumerate(metas)]))
-    print("OK")
+    saved = [str(output_dir / f"{prefix}.npz")]
     try:
         import scanpy as sc
         adata = sc.AnnData(X=np.asarray(preds))
@@ -113,10 +113,10 @@ def save_pred(preds, deltas, latents, metas, pert_arr, pert_strs, output_dir, pr
         adata.obs["source_idx"] = [m.get("source_idx", m.get("idx", i)) for i, m in enumerate(metas)]
         if deltas is not None: adata.obsm["delta"] = np.asarray(deltas)
         if latents is not None and latents.size > 0: adata.obsm["latent"] = np.asarray(latents)
-        print("Saving h5ad ... ", end="", flush=True)
         adata.write_h5ad(output_dir / f"{prefix}.h5ad")
-        print("OK")
+        saved.append(str(output_dir / f"{prefix}.h5ad"))
     except ImportError:
         pass
+    print(f"[infer] saved={', '.join(saved)}")
 
 save_predictions = save_pred

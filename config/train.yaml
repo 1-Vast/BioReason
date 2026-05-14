@@ -3,7 +3,7 @@
 train:
   stage: 1
   epochs: 100
-  batch_size: 128
+  batch_size: 256
   lr: 0.0005
   weight_decay: 0.0001
   amp: true
@@ -28,14 +28,24 @@ train:
   stage1_ckpt: "output/stage1/model.pt"
   stage2_ckpt: "output/stage2/model.pt"
 
+  # evidence policy
+  use_evidence_policy: "quality_gate"
+  evidence_dropout: 0.2
+  min_evidence_conf_train: 0.35
+  evidence_warm_start_epoch: 2
+
+  # model strength
+  pert_embed_strength: 1.0
+  evidence_strength: 0.2
+
   # performance
-  num_workers: 0
+  num_workers: 2
   pin_memory: true
-  persistent_workers: false
-  prefetch_factor: 2
+  persistent_workers: true
+  prefetch_factor: 4
   non_blocking: true
-  progress: true
-  log_every: 20
+  progress: false
+  log_every: 50
   profile: false
   profile_batches: 20
   monitor_gpu: true

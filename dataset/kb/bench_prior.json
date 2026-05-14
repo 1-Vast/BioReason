@@ -1,0 +1,141 @@
+{
+  "TP53_KO": {
+    "description": "TP53 knockout disrupts DNA damage response, cell cycle checkpoint, and apoptosis. Loss of p53 leads to genomic instability and failure to arrest cell cycle after DNA damage.",
+    "confidence_score": 0.95,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "p53 signaling", "direction": "down", "confidence": 0.95},
+      {"pathway": "DNA damage response", "direction": "down", "confidence": 0.90},
+      {"pathway": "Apoptosis", "direction": "down", "confidence": 0.90},
+      {"pathway": "Cell cycle arrest", "direction": "down", "confidence": 0.85}
+    ],
+    "tf_activity": [
+      {"tf": "TP53", "direction": "down"},
+      {"tf": "E2F1", "direction": "up"},
+      {"tf": "MYC", "direction": "up"}
+    ],
+    "marker_genes": [
+      {"gene": "CDKN1A", "direction": "down"},
+      {"gene": "BBC3", "direction": "down"},
+      {"gene": "BAX", "direction": "down"},
+      {"gene": "MDM2", "direction": "down"},
+      {"gene": "GADD45A", "direction": "down"}
+    ]
+  },
+  "MYC_KO": {
+    "description": "MYC knockout reduces cell proliferation, ribosomal biogenesis, and metabolic activity. MYC is a master transcription factor driving growth-related gene expression.",
+    "confidence_score": 0.90,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "MYC targets", "direction": "down", "confidence": 0.90},
+      {"pathway": "Cell proliferation", "direction": "down", "confidence": 0.88},
+      {"pathway": "Ribosome biogenesis", "direction": "down", "confidence": 0.85},
+      {"pathway": "Glycolysis", "direction": "down", "confidence": 0.80}
+    ],
+    "tf_activity": [
+      {"tf": "MYC", "direction": "down"},
+      {"tf": "MAX", "direction": "down"},
+      {"tf": "E2F1", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "NPM1", "direction": "down"},
+      {"gene": "ODC1", "direction": "down"},
+      {"gene": "LDHA", "direction": "down"},
+      {"gene": "CAD", "direction": "down"},
+      {"gene": "CCND2", "direction": "down"}
+    ]
+  },
+  "STAT1_KO": {
+    "description": "STAT1 knockout impairs JAK-STAT interferon signaling, reducing antiviral and immune response genes. Loss of STAT1 weakens type I and II interferon responses.",
+    "confidence_score": 0.88,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "JAK-STAT signaling", "direction": "down", "confidence": 0.90},
+      {"pathway": "Interferon response", "direction": "down", "confidence": 0.90},
+      {"pathway": "Antiviral defense", "direction": "down", "confidence": 0.85},
+      {"pathway": "Antigen presentation", "direction": "down", "confidence": 0.80}
+    ],
+    "tf_activity": [
+      {"tf": "STAT1", "direction": "down"},
+      {"tf": "IRF1", "direction": "down"},
+      {"tf": "IRF9", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "IRF1", "direction": "down"},
+      {"gene": "MX1", "direction": "down"},
+      {"gene": "OAS1", "direction": "down"},
+      {"gene": "ISG15", "direction": "down"},
+      {"gene": "IFIT1", "direction": "down"}
+    ]
+  },
+  "EGFR_KO": {
+    "description": "EGFR knockout reduces MAPK/ERK and PI3K/AKT signaling, impairing cell growth, survival, and migration.",
+    "confidence_score": 0.85,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "EGFR-MAPK signaling", "direction": "down", "confidence": 0.88},
+      {"pathway": "PI3K-AKT signaling", "direction": "down", "confidence": 0.85},
+      {"pathway": "Cell migration", "direction": "down", "confidence": 0.80},
+      {"pathway": "Cell survival", "direction": "down", "confidence": 0.80}
+    ],
+    "tf_activity": [
+      {"tf": "FOS", "direction": "down"},
+      {"tf": "JUN", "direction": "down"},
+      {"tf": "ELK1", "direction": "down"},
+      {"tf": "STAT3", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "FOS", "direction": "down"},
+      {"gene": "DUSP6", "direction": "down"},
+      {"gene": "EGR1", "direction": "down"},
+      {"gene": "CCND1", "direction": "down"},
+      {"gene": "SPRY2", "direction": "down"}
+    ]
+  },
+  "BRCA1_KO": {
+    "description": "BRCA1 knockout impairs homologous recombination DNA repair, leading to genomic instability and replication stress. BRCA1 is essential for double-strand break repair.",
+    "confidence_score": 0.90,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "DNA repair", "direction": "down", "confidence": 0.92},
+      {"pathway": "Homologous recombination", "direction": "down", "confidence": 0.90},
+      {"pathway": "Cell cycle checkpoint", "direction": "down", "confidence": 0.85},
+      {"pathway": "p53 signaling", "direction": "up", "confidence": 0.80}
+    ],
+    "tf_activity": [
+      {"tf": "TP53", "direction": "up"},
+      {"tf": "E2F1", "direction": "up"},
+      {"tf": "ATF4", "direction": "up"}
+    ],
+    "marker_genes": [
+      {"gene": "BRCA1", "direction": "down"},
+      {"gene": "RAD51", "direction": "down"},
+      {"gene": "FANCD2", "direction": "down"},
+      {"gene": "CDKN1A", "direction": "up"},
+      {"gene": "GADD45A", "direction": "up"}
+    ]
+  },
+  "NFKB1_KO": {
+    "description": "NFKB1 knockout reduces NF-kB mediated inflammatory and immune responses. NF-kB is a key transcription factor regulating cytokine production and cell survival.",
+    "confidence_score": 0.85,
+    "source": "local",
+    "pathway_impact": [
+      {"pathway": "NF-kB signaling", "direction": "down", "confidence": 0.90},
+      {"pathway": "Inflammatory response", "direction": "down", "confidence": 0.85},
+      {"pathway": "Immune response", "direction": "down", "confidence": 0.85},
+      {"pathway": "Cell survival", "direction": "down", "confidence": 0.80}
+    ],
+    "tf_activity": [
+      {"tf": "NFKB1", "direction": "down"},
+      {"tf": "RELA", "direction": "down"},
+      {"tf": "IRF3", "direction": "down"}
+    ],
+    "marker_genes": [
+      {"gene": "TNF", "direction": "down"},
+      {"gene": "IL1B", "direction": "down"},
+      {"gene": "CXCL8", "direction": "down"},
+      {"gene": "NFKBIA", "direction": "down"},
+      {"gene": "BCL2", "direction": "down"}
+    ]
+  }
+}

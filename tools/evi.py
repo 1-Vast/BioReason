@@ -22,7 +22,108 @@ def zero_prior(pert, reason):
     }
 
 
-def validate_prior(obj, min_conf=0.5):
+GENERIC_PHRASES = [
+    "gene expression",
+    "cellular process",
+    "transcription factor",
+]
+
+
+def qc_prior(prior, dataset_context=None, gene_vocab=None, pathway_vocab=None):
+    """Run QC checks on a prior. Returns (passed, adjusted_prior, reason).
+
+    QC checks:
+      a. confidence_score < 0.35  →  FAIL  "low_confidence"
+      b. description contains only generic phrases  →  generic_prior=True,
+         confidence lowered by 0.2
+      c. marker genes in gene_vocab  →  marker_in_vocab_ratio
+      d. pathway names in pathway_vocab  →  pathway_match_ratio
+      e. empty pathway_impact + tf_activity + marker_genes AND short
+         description  →  FAIL  "empty_prior"
+      f. on failure: evidence set to zeros, evidence_conf=0, source
+         marked as source+"_filtered"
+    """
+    prior = dict(prior)
+    reason = "ok"
+
+    # ── a. confidence threshold ───────────────────────────────────────
+    conf = float(prior.get("confidence_score", 0.0))
+    if conf < 0.35:
+        return False, prior, "low_confidence"
+
+    # ── b. generic phrase detection ───────────────────────────────────
+    desc = str(prior.get("description", "")).lower()
+    generic_prior = False
+    for phrase in GENERIC_PHRASES:
+        if phrase in desc:
+            # simplistic: flag if ANY generic phrase appears
+            generic_prior = True
+            break
+
+    if generic_prior:
+        prior["generic_prior"] = True
+        prior["confidence_adjusted"] = max(0.0, conf - 0.2)
+    else:
+        prior["generic_prior"] = False
+        prior["confidence_adjusted"] = conf
+
+    # ── c. marker genes in vocab ──────────────────────────────────────
+    marker_in_vocab_ratio = 0.0
+    if gene_vocab is not None:
+        markers = prior.get("marker_genes", [])
+        if markers:
+            in_vocab = sum(
+                1 for m in markers
+                if isinstance(m, dict) and m.get("gene", "") in gene_vocab
+            )
+            marker_in_vocab_ratio = in_vocab / max(len(markers), 1)
+    prior["marker_in_vocab_ratio"] = marker_in_vocab_ratio
+
+    # ── d. pathway match ratio ────────────────────────────────────────
+    pathway_match_ratio = 0.0
+    if pathway_vocab is not None:
+        pathways = prior.get("pathway_impact", [])
+        if pathways:
+            matched = sum(
+                1 for p in pathways
+                if isinstance(p, dict) and p.get("pathway", "") in pathway_vocab
+            )
+            pathway_match_ratio = matched / max(len(pathways), 1)
+    prior["pathway_match_ratio"] = pathway_match_ratio
+
+    # ── e. empty prior check ──────────────────────────────────────────
+    pathway_impact = prior.get("pathway_impact", [])
+    tf_activity = prior.get("tf_activity", [])
+    marker_genes = prior.get("marker_genes", [])
+    desc_short = len(desc) < 20
+    if not pathway_impact and not tf_activity and not marker_genes and desc_short:
+        return False, prior, "empty_prior"
+
+    return True, prior, reason
+
+
+def prior_to_structured(prior):
+    """Extract structured fields from a prior dict for structured encoding."""
+    return {
+        "description": prior.get("description", ""),
+        "confidence_score": float(prior.get("confidence_score", 0.0)),
+        "confidence_adjusted": float(prior.get("confidence_adjusted", prior.get("confidence_score", 0.0))),
+        "source": prior.get("source", "unknown"),
+        "pathway_impact": prior.get("pathway_impact", []),
+        "tf_activity": prior.get("tf_activity", []),
+        "marker_genes": prior.get("marker_genes", []),
+        "response_programs": prior.get("response_programs", []),
+        "perturbation_gene": prior.get("perturbation_gene", ""),
+        "perturbation_type": prior.get("perturbation_type", ""),
+        "expected_direction": prior.get("expected_direction", "unknown"),
+        "generic_prior": prior.get("generic_prior", False),
+        "marker_in_vocab_ratio": prior.get("marker_in_vocab_ratio", 0.0),
+        "pathway_match_ratio": prior.get("pathway_match_ratio", 0.0),
+        "caveats": prior.get("caveats", ""),
+    }
+
+
+def validate_prior(obj, min_conf=0.35):
     if not isinstance(obj, dict):
         return False, zero_prior("unknown", "bad_prior"), "bad_prior"
     if obj.get("ok") is False:
@@ -116,18 +217,30 @@ def _parse_llm_prior(raw):
 
 
 def build_evidence(adata, pert_key, control_label, kb_path, use_llm, min_conf,
-                   evidence_dim, encoder, model_name=None,
+                   evidence_dim, encoder="hash", model_name=None,
                    max_llm_calls=50, max_llm_tokens=30000,
                    llm_max_tokens=512, llm_cache=None, llm_sleep=0.0,
-                   dry_run=False):
+                   dry_run=False,
+                   evidence_encoder_mode=None, evidence_schema="bio_v2",
+                   dataset_context=None, gene_vocab=None, pathway_vocab=None):
     from .kb import load_kb, normalize_pert, query_kb
     from .text import TextEncoder
+
+    if evidence_encoder_mode is None:
+        evidence_encoder_mode = encoder
 
     if pert_key not in adata.obs:
         raise KeyError(f"adata.obs['{pert_key}'] not found")
 
     kb = load_kb(kb_path)
-    text_encoder = TextEncoder(dim=evidence_dim, mode=encoder, model_name=model_name)
+    text_encoder = TextEncoder(
+        dim=evidence_dim,
+        mode=evidence_encoder_mode,
+        model_name=model_name,
+        evidence_schema=evidence_schema,
+        pathway_vocab=pathway_vocab,
+        program_vocab=None,
+    )
     pert_per_cell = adata.obs[pert_key].astype(str).to_numpy()
     unique_perts = list(dict.fromkeys(pert_per_cell.tolist()))
     max_llm_calls = max(0, int(max_llm_calls))
@@ -152,6 +265,20 @@ def build_evidence(adata, pert_key, control_label, kb_path, use_llm, min_conf,
     def audit_base(pert):
         return {
             "pert": pert,
+            "perturbation_gene": "",
+            "source": "unknown",
+            "evidence_encoder_mode": evidence_encoder_mode,
+            "confidence_raw": 0.0,
+            "confidence_adjusted": 0.0,
+            "used_evidence": False,
+            "filtered_reason": "",
+            "generic_prior": False,
+            "pathway_count": 0,
+            "tf_count": 0,
+            "marker_count": 0,
+            "program_count": 0,
+            "marker_in_vocab_ratio": 0.0,
+            "evidence_norm": 0.0,
             "local_hit": False,
             "llm_called": False,
             "llm_cache_hit": False,
@@ -170,9 +297,10 @@ def build_evidence(adata, pert_key, control_label, kb_path, use_llm, min_conf,
             pert_to_vec[pert] = zero.copy()
             row.update({
                 "pert": pert, "valid": True, "source": "control",
-                "confidence": 1.0, "reason": "control",
+                "confidence_raw": 1.0, "confidence_adjusted": 1.0,
+                "filtered_reason": "control",
                 "llm_skipped_reason": "control",
-                "zero_evidence": True,
+                "used_evidence": False,
             })
             audit_rows.append(row)
             continue
@@ -230,25 +358,69 @@ def build_evidence(adata, pert_key, control_label, kb_path, use_llm, min_conf,
         if prior is None or not isinstance(prior, dict):
             prior = zero_prior(pert, "no_prior")
 
+        # ── validate_prior (basic checks, min_conf=0.35) ──────────────
         valid, cleaned, reason = validate_prior(prior, min_conf=min_conf)
         if not valid:
             pert_to_vec[pert] = zero.copy()
             row.update({
-                "pert": pert, "valid": False, "source": cleaned.get("source", "zero"),
-                "confidence": float(cleaned.get("confidence_score", 0.0)),
-                "reason": reason, "zero_evidence": True,
+                "pert": pert, "valid": False,
+                "source": cleaned.get("source", "zero"),
+                "confidence_raw": float(cleaned.get("confidence_score", 0.0)),
+                "confidence_adjusted": 0.0,
+                "filtered_reason": reason,
+                "used_evidence": False,
+                "evidence_norm": 0.0,
             })
             if not row["llm_skipped_reason"] and reason:
                 row["llm_skipped_reason"] = reason
             audit_rows.append(row)
             continue
 
-        pert_to_vec[pert] = text_encoder.encode([prior_to_text(cleaned)])[0].astype(np.float32)
-        row.update({
-            "pert": pert, "valid": True, "source": cleaned.get("source", "unknown"),
-            "confidence": float(cleaned.get("confidence_score", 0.0)),
-            "reason": "ok", "zero_evidence": False,
-        })
+        # ── qc_prior (advanced QC) ────────────────────────────────────
+        qc_passed, qc_prior_out, qc_reason = qc_prior(
+            cleaned,
+            dataset_context=dataset_context,
+            gene_vocab=gene_vocab,
+            pathway_vocab=pathway_vocab,
+        )
+
+        # fill audit fields from qc_prior output
+        row["confidence_raw"] = float(cleaned.get("confidence_score", 0.0))
+        row["confidence_adjusted"] = float(qc_prior_out.get("confidence_adjusted", row["confidence_raw"]))
+        row["generic_prior"] = bool(qc_prior_out.get("generic_prior", False))
+        row["pathway_count"] = len(qc_prior_out.get("pathway_impact", []))
+        row["tf_count"] = len(qc_prior_out.get("tf_activity", []))
+        row["marker_count"] = len(qc_prior_out.get("marker_genes", []))
+        row["program_count"] = len(qc_prior_out.get("response_programs", []))
+        row["marker_in_vocab_ratio"] = float(qc_prior_out.get("marker_in_vocab_ratio", 0.0))
+        row["perturbation_gene"] = str(qc_prior_out.get("perturbation_gene", ""))
+
+        if not qc_passed:
+            pert_to_vec[pert] = zero.copy()
+            row.update({
+                "pert": pert, "valid": False,
+                "source": str(qc_prior_out.get("source", "unknown")) + "_filtered",
+                "filtered_reason": qc_reason,
+                "used_evidence": False,
+                "evidence_norm": 0.0,
+            })
+            audit_rows.append(row)
+            continue
+
+        # ── encode evidence ───────────────────────────────────────────
+        row["used_evidence"] = True
+
+        if evidence_encoder_mode in ("structured", "hybrid"):
+            structured = prior_to_structured(qc_prior_out)
+            vec = text_encoder.encode([structured])[0].astype(np.float32)
+        else:
+            vec = text_encoder.encode([prior_to_text(qc_prior_out)])[0].astype(np.float32)
+
+        row["evidence_norm"] = float(np.linalg.norm(vec))
+        row["source"] = str(qc_prior_out.get("source", "unknown"))
+        row["valid"] = True
+        row["filtered_reason"] = "ok"
+        pert_to_vec[pert] = vec
         audit_rows.append(row)
 
     if use_llm and llm_cache:
@@ -257,7 +429,8 @@ def build_evidence(adata, pert_key, control_label, kb_path, use_llm, min_conf,
     audit = pd.DataFrame(audit_rows)
     by_pert = audit.set_index("pert").to_dict(orient="index") if not audit.empty else {}
     evidence = np.vstack([pert_to_vec.get(p, zero) for p in pert_per_cell]).astype(np.float32)
-    conf = np.array([by_pert.get(p, {}).get("confidence", 0.0) for p in pert_per_cell], dtype=np.float32)
+    conf = np.array([by_pert.get(p, {}).get("confidence_adjusted",
+                   by_pert.get(p, {}).get("confidence_raw", 0.0)) for p in pert_per_cell], dtype=np.float32)
     source = np.array([by_pert.get(p, {}).get("source", "zero") for p in pert_per_cell], dtype=object)
     return evidence, conf, source, audit
 
