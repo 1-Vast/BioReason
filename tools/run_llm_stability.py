@@ -58,6 +58,17 @@ def parse_train_metrics(text: str) -> dict:
     for line in text.splitlines():
         if "[train] ep" not in line:
             continue
+        for i, token in enumerate(line.replace("|", " ").replace(",", " ").split()):
+            if token.endswith("cells/s"):
+                try:
+                    metrics["cells_per_sec"] = float(line.replace("|", " ").replace(",", " ").split()[i - 1])
+                except Exception:
+                    pass
+            if token.startswith("data_wait=") and token.endswith("s"):
+                try:
+                    metrics["data_wait"] = float(token.split("=", 1)[1][:-1])
+                except ValueError:
+                    pass
         section = "train"
         for token in line.replace(",", " ").split():
             if token == "val":
@@ -256,6 +267,7 @@ def train_run(args, h5ad: Path, seed: str, split: str, evidence: str, config_nam
         "batch_size": batch_size,
         "num_workers": workers,
         "cache": bool(cache_dir),
+        "preload_cache_to_gpu": bool(args.preload_cache_to_gpu),
         "status": "running",
     }
     stage_metrics = {}
@@ -313,11 +325,14 @@ def main() -> None:
 
     results_path = out_dir / "results.csv"
     fields = ["timestamp", "seed", "split", "evidence", "config", "experiment", "batch_size",
-              "num_workers", "cache", "status", "gpu_avg_util", "s1_val_deg", "s2_val_deg", "s3_val_deg", "s3_delta",
+              "num_workers", "cache", "preload_cache_to_gpu", "status", "gpu_avg_util",
+              "s1_val_deg", "s2_val_deg", "s3_val_deg", "s3_delta",
+              "s1_cells_per_sec", "s2_cells_per_sec", "s3_cells_per_sec",
+              "s1_data_wait", "s2_data_wait", "s3_data_wait",
               "delta_deg", "delta_top50", "delta_delta_pearson"]
     rows = []
     zero_by_key: dict[tuple[str, str, str], dict] = {}
-    batch_size, workers = 2048, 16
+    batch_size, workers = 4096, 0 if args.preload_cache_to_gpu else 8
     try:
         for seed in [s.strip() for s in args.seeds.split(",") if s.strip()]:
             for split in [s.strip() for s in args.splits.split(",") if s.strip()]:

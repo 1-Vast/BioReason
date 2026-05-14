@@ -472,6 +472,7 @@ def train_model(model, train_loader, val_loader, config, loss_fn=None):
         if val_stats:
             parts.append(f"val {format_loss(val_stats)}")
         parts.append(format_speed(train_stats.get("samples", 0), elapsed))
+        parts.append(f"data_wait={train_stats.get('data_time', 0.0):.3f}s")
         parts.append(f"gpu {gpu_mem_gb():.1f}GB")
         logger.info(" | ".join(parts))
 
