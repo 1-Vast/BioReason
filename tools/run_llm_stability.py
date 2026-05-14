@@ -24,11 +24,11 @@ ROOT = Path.cwd()
 sys.path.insert(0, str(ROOT))
 
 CONFIGS = {
-    "best_previous": dict(strength=0.4, alpha=0.8, dropout=0.1, contrast=0.0, adaptive=True),
-    "contrastive": dict(strength=0.4, alpha=0.8, dropout=0.1, contrast=0.05, adaptive=True),
-    "adaptive_gate": dict(strength=0.4, alpha=0.8, dropout=0.1, contrast=0.0, adaptive=True),
+    "best_previous": dict(strength=0.4, alpha=0.8, dropout=0.2, contrast=0.0, adaptive=True),
+    "contrastive": dict(strength=0.4, alpha=0.8, dropout=0.2, contrast=0.05, adaptive=True),
+    "adaptive_gate": dict(strength=0.4, alpha=0.8, dropout=0.2, contrast=0.0, adaptive=True),
     "conservative": dict(strength=0.3, alpha=0.8, dropout=0.2, contrast=0.0, adaptive=True),
-    "strong_evidence": dict(strength=0.5, alpha=1.0, dropout=0.1, contrast=0.0, adaptive=True),
+    "strong_evidence": dict(strength=0.5, alpha=1.0, dropout=0.2, contrast=0.0, adaptive=True),
 }
 
 

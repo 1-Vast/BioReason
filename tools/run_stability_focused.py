@@ -71,7 +71,7 @@ train:
   evi_warm_margin: 0.02
   latent_only_bp: true
   use_evidence_policy: "quality_gate"
-  evidence_dropout: 0.1
+  evidence_dropout: 0.2
   min_evidence_conf_train: 0.35
   evidence_warm_start_epoch: 2
   stage3_init: "stage1"
