@@ -30,8 +30,6 @@ CONFIGS = {
                           adaptive=True, gate_bias=-2.5, warm_start=5, warm_epochs=8),
     "soft_contrastive": dict(strength=0.15, alpha=0.0, dropout=0.3, contrast=0.10,
                              adaptive=True, gate_bias=-2.5, warm_start=5, warm_epochs=8),
-    "soft_rank_lowcell": dict(strength=0.10, alpha=0.0, dropout=0.5, contrast=0.10,
-                              adaptive=True, gate_bias=-2.5, warm_start=8, warm_epochs=10),
 }
 
 
@@ -332,7 +330,7 @@ def main() -> None:
     ap.add_argument("--out_dir", default="output/remote_bench/LLM_positive")
     ap.add_argument("--seeds", default="42,123,7")
     ap.add_argument("--splits", default="heldout,lowcell_5,lowcell_10,lowcell_20,lowcell_50")
-    ap.add_argument("--evidence", default="zero,struct_llm,hybrid_llm")
+    ap.add_argument("--evidence", default="zero,struct_llm")
     ap.add_argument("--run_timeout", type=int, default=7200)
     ap.add_argument("--use_cache", action="store_true", default=False)
     ap.add_argument("--cache_root", default="cache/llm_stability_remote")
